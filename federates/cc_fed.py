@@ -11,7 +11,6 @@ For every time-aligned measurement set released by the PDC (via NS-3) it
 Usage: cc_fed.py <run_dir>/run_config.json
 """
 import csv, json, os, sys, time
-from collections import deque
 import numpy as np
 import helics as h
 
@@ -19,25 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cpslib.network import Network
 from cpslib.pmu import PmuLayout
 from cpslib.estimation import StateEstimator
-
-
-def nearest_generators(net, gen_buses):
-    """Hop distance from every bus to the closest in-service generator bus."""
-    adj = {b: set() for b in net.bus_ids}
-    for f, t in zip(net.f, net.t):
-        adj[net.bus_ids[f]].add(net.bus_ids[t]); adj[net.bus_ids[t]].add(net.bus_ids[f])
-    best = {}
-    for b in net.bus_ids:
-        seen, q = {b}, deque([(b, 0)])
-        while q:
-            x, d = q.popleft()
-            if x in gen_buses:
-                best[b] = x
-                break
-            for y in adj[x]:
-                if y not in seen:
-                    seen.add(y); q.append((y, d + 1))
-    return best
+from cpslib.control import nearest_generators
 
 
 def main(cfg_path):
