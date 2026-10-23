@@ -204,13 +204,7 @@ def test_grid_federate_avr_csv(enforce, backend, tmp_path, repo_root, monkeypatc
 
 
 @pytest.mark.parametrize("enforce", [True, False])
-def test_web_request_argv(enforce, repo_root):
-    # Load the actual request class without starting FastAPI's worker threads.
-    tree = ast.parse((repo_root / "webapp/app.py").read_text())
-    request = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RunRequest")
-    namespace = dict(BaseModel=BaseModel, Field=Field, Optional=Optional)
-    exec(compile(ast.Module(body=[request], type_ignores=[]), "RunRequest", "exec"), namespace)
-    namespace["grids"] = SimpleNamespace(BUILTIN={"118"})
-    argv = namespace["RunRequest"](case="ieee118", qlim=enforce).argv()
+def test_web_request_argv(enforce, run_request_model):
+    argv = run_request_model(case="ieee118", qlim=enforce).argv()
     assert ("--no-qlim" in argv) is (not enforce)
     assert parse_args(argv).qlim is enforce

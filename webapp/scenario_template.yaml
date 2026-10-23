@@ -39,12 +39,26 @@ event:                       # a disturbance in the grid
   t: 4                       # when it happens (s)
 
 attack:
-  type: fdi-simple           # example; none | fdi-simple | fdi-stealthy | delay | drop
-  target: 49                 # example; bus to hide (empty = highest-voltage bus)
+  type: fdi-simple           # example; none | fdi-simple | fdi-stealthy | delay | drop | replay
+                            #   | cmd-drop | cmd-delay | cmd-inject | coordinated
+  target: 49                 # example; FDI/drop/delay: bus to hide (empty = highest voltage)
+                            # replay: explicit bus = observing PMUs; null/omitted = ALL PMUs
+                            # cmd-*/coordinated: in-service generator bus; empty = nearest_generators
+                            # selection for the default FDI target
   fake: 1.02                 # example; voltage the attacker wants the control center to see (pu)
   start: 4                   # attack window (s)
   end: 9
-  delay_ms: 100              # delay attack only
+  delay_ms: 100              # delay/cmd-delay: extra network delay (ms)
+  record_s: 2               # example; replay: record noisy phasors in [start-record_s, start)
+                            # default min(start, end-start); > 0 and <= start; replay loops with
+                            # CURRENT frame index/time. No samples in a sub-frame window = no replay.
+  ramp_s: 0                 # fdi-simple/fdi-stealthy: seconds to full injection; 0 = original step
+  vset: 1.12                # cmd-inject/coordinated: forged setpoint, 0.8-1.2 pu
+                            # One UDP command at start, impersonating the CC via its source socket.
+                            # Normal generator link/delivery/logging; reason: attack: forged command.
+                            # CC keeps its own setpoint guess (known issue S2; WP4).
+                            # coordinated: stealthy FDI planned AFTER forged-setpoint power flow,
+                            # showing the pre-attack target voltage; adaptive ref when PMU is owned.
 
 control:
   bdd: true                  # chi-square bad data detection with removal of suspicious PMUs

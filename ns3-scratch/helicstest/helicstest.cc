@@ -285,6 +285,12 @@ static std::map<uint32_t, std::vector<std::pair<uint32_t, cplx>>> atkCoef;
 static int64_t atkRefBus = -1;
 static uint32_t atkRefCh = 0;
 static double atkVFake = 0;
+static double atkRecordS = 0, atkRampS = 0, atkVset = 1.12;
+static std::set<uint32_t> atkGenBuses;
+// Noisy phasors only: each replay gets the current frame index/time at Sample().
+static std::map<uint32_t, std::vector<std::vector<cplx>>> atkRecording;
+static std::map<uint32_t, size_t> atkReplayPos;
+static uint64_t replayed = 0, cmdsDropped = 0, cmdsDelayed = 0, cmdsForged = 0;
 
 void
 Release (uint64_t k)
@@ -359,9 +365,11 @@ Sample (uint64_t k)
 {
   double t = k / rate;
   bool atkOn = atkType != "none" && t >= atkStart && t < atkEnd;
+  bool fdi = atkType == "fdi" || atkType == "coordinated";
+  double scale = atkRampS > 0 ? std::min (1.0, std::max (0.0, (t - atkStart) / atkRampS)) : 1.0;
   cplx c (0, 0);
   bool adaptive = false;
-  if (atkOn && atkType == "fdi" && atkRefBus >= 0)
+  if (atkOn && fdi && atkRefBus >= 0)
     for (size_t i = 0; i < pmus.size (); ++i)
       if (pmus[i].bus == uint32_t (atkRefBus) && atkRefCh < state[i].size ())
         {
@@ -376,7 +384,11 @@ Sample (uint64_t k)
       for (cplx &c : ph)
         c = std::polar (std::abs (c) * (1 + noiseMag * noise->GetValue ()),
                         std::arg (c) + noiseAng * noise->GetValue ());
+      if (atkType == "replay" && atkBuses.count (p.bus) && t >= atkStart - atkRecordS && t < atkStart)
+        atkRecording[p.bus].push_back (ph);
       bool attacked = atkOn && atkBuses.count (p.bus);
+      if (atkType == "replay" && atkRecording[p.bus].empty ())
+        attacked = false; // a sub-frame recording window may contain no samples
       double extraMs = 0;
       if (attacked)
         {
@@ -388,14 +400,20 @@ Sample (uint64_t k)
               stats[i].dropped++;
               continue;
             }
-          if (atkType == "fdi" && adaptive)
+          if (fdi && adaptive)
             for (auto &[ch, h] : atkCoef[p.bus])
               if (ch < ph.size ())
-                ph[ch] += h * c;
-          if (atkType == "fdi" && !adaptive)
+                ph[ch] += scale * h * c;
+          if (fdi && !adaptive)
             for (auto &[ch, d] : atkDeltas[p.bus])
               if (ch < ph.size ())
-                ph[ch] += d;
+                ph[ch] += scale * d;
+          if (atkType == "replay")
+            {
+              auto &recording = atkRecording[p.bus];
+              ph = recording[atkReplayPos[p.bus]++ % recording.size ()];
+              replayed++;
+            }
           if (atkType == "delay")
             extraMs = atkDelayMs;
         }
@@ -426,7 +444,7 @@ GenReceive (uint32_t bus, Ptr<Socket> socket)
 }
 
 void
-SendCommand (json cmd)
+TransmitCommand (json cmd)
 {
   uint32_t bus = cmd["gen_bus"].get<uint32_t> ();
   if (!genAddr.count (bus))
@@ -434,7 +452,47 @@ SendCommand (json cmd)
   std::string s = cmd.dump ();
   ccCmdSock->SendTo (Create<Packet> ((const uint8_t *) s.data (), s.size ()), 0,
                      InetSocketAddress (genAddr[bus], 5000));
+}
+
+void
+SendCommand (json cmd)
+{
+  uint32_t bus = cmd["gen_bus"].get<uint32_t> ();
+  if (!genAddr.count (bus))
+    return;
   cmdSent++;
+  double t = Simulator::Now ().GetSeconds ();
+  if (t >= atkStart && t < atkEnd && atkGenBuses.count (bus))
+    {
+      if (atkType == "cmd-drop")
+        {
+          cmdsDropped++;
+          return;
+        }
+      if (atkType == "cmd-delay")
+        {
+          cmdsDelayed++;
+          Simulator::Schedule (Seconds (atkDelayMs / 1000.0), &TransmitCommand, cmd);
+          return;
+        }
+    }
+  TransmitCommand (cmd);
+}
+
+void
+ForgeCommands ()
+{
+  // Attacker impersonates the CC using its source socket. The forged packet
+  // traverses the normal UDP generator link; cc/commands never contains it.
+  for (uint32_t bus : atkGenBuses)
+    {
+      if (!genAddr.count (bus))
+        continue;
+      json cmd = {{"id", "attack:forged:" + std::to_string (bus)}, {"gen_bus", bus},
+                  {"vset", atkVset}, {"issued_t", atkStart}, {"reason", "attack: forged command"}};
+      cmdsForged++;
+      SendCommand (cmd);
+    }
 }
 
 double
@@ -468,6 +526,11 @@ Run (const std::string &cfgPath)
   atkStart = atk.value ("start", 0.0);
   atkEnd = atk.value ("end", 0.0);
   atkDelayMs = atk.value ("delay_ms", 0.0);
+  atkRecordS = atk.value ("record_s", std::min (atkStart, atkEnd - atkStart));
+  atkRampS = atk.value ("ramp_s", 0.0);
+  atkVset = atk.value ("vset", 1.12);
+  for (auto &b : atk.value ("gen_targets", json::array ()))
+    atkGenBuses.insert (b.get<uint32_t> ());
   for (auto &b : atk.value ("targets", json::array ()))
     atkBuses.insert (b.get<uint32_t> ());
   json deltas = atk.value ("deltas", json::object ());
@@ -552,6 +615,8 @@ Run (const std::string &cfgPath)
   ccCmdSock = Socket::CreateSocket (cc.Get (0), UdpSocketFactory::GetTypeId ());
   ccCmdSock->Bind ();
   Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
+  if (atkType == "cmd-inject" || atkType == "coordinated")
+    Simulator::Schedule (Seconds (atkStart), &ForgeCommands);
 
   // HELICS federation: grid measurements in, aligned PDC sets out; commands both ways
   helics::FederateInfo fi;
@@ -686,7 +751,11 @@ Run (const std::string &cfgPath)
                                   {"max", Percentile (lat, 1.0)}}},
                   {"per_pmu_delivery", per},
                   {"commands_sent", cmdSent},
-                  {"commands_delivered", cmdDelivered}};
+                  {"commands_delivered", cmdDelivered},
+                  {"replayed", replayed},
+                  {"cmds_dropped", cmdsDropped},
+                  {"cmds_delayed", cmdsDelayed},
+                  {"cmds_forged", cmdsForged}};
   std::ofstream(outdir + "/ns3_summary.json") << summary.dump (2);
   std::cout << "[NS3] done: " << counts["delivered"] << "/" << total << " frames delivered" << std::endl;
   Simulator::Destroy ();

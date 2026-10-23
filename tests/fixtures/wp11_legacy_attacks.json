@@ -1,0 +1,197 @@
+{
+  "none|none": {
+    "type": "none",
+    "start": 3.0,
+    "end": 8.0
+  },
+  "none|avr:6:1.12:3": {
+    "type": "none",
+    "start": 3.0,
+    "end": 8.0
+  },
+  "none|load:4:20:3": {
+    "type": "none",
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-simple|none": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05246946209384883,
+          "dim": -0.22093418892447214,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-simple|avr:6:1.12:3": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05185548415486513,
+          "dim": -0.2210791013442839,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-simple|load:4:20:3": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05449982841458782,
+          "dim": -0.22044212163494034,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-stealthy|none": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05246946209384883,
+          "dim": -0.22093418892447214,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-stealthy|avr:6:1.12:3": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05185548415486513,
+          "dim": -0.2210791013442839,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "fdi-stealthy|load:4:20:3": {
+    "type": "fdi",
+    "targets": [
+      7
+    ],
+    "deltas": {
+      "7": [
+        {
+          "ch": 2,
+          "dre": -0.05449982841458782,
+          "dim": -0.22044212163494034,
+          "hre": 0.0,
+          "him": 5.676979846721544
+        }
+      ]
+    },
+    "ref": null,
+    "v_fake": 1.05,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "drop|none": {
+    "type": "drop",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "drop|avr:6:1.12:3": {
+    "type": "drop",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "drop|load:4:20:3": {
+    "type": "drop",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "delay|none": {
+    "type": "delay",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "delay|avr:6:1.12:3": {
+    "type": "delay",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  },
+  "delay|load:4:20:3": {
+    "type": "delay",
+    "targets": [
+      7
+    ],
+    "delay_ms": 100.0,
+    "start": 3.0,
+    "end": 8.0
+  }
+}

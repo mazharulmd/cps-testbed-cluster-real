@@ -80,3 +80,28 @@ def experiment_configs(tmp_path_factory):
         return ns3, run, meta, run_dir
 
     return build
+
+
+@pytest.fixture(scope="session")
+def run_request_model():
+    """The real webapp RunRequest model, loaded from app.py's AST.
+
+    Importing app.py needs FastAPI and starts job threads, so only the class is
+    compiled, with the names app.py imports for it. One loader for all tests: a
+    new name used by RunRequest only has to be added here.
+    """
+    import ast
+    from typing import Optional
+
+    from pydantic import BaseModel, Field, model_validator
+
+    import scenario
+    from cpslib import grids
+
+    path = ROOT / "webapp" / "app.py"
+    tree = ast.parse(path.read_text())
+    model = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RunRequest")
+    namespace = {"BaseModel": BaseModel, "Field": Field, "model_validator": model_validator,
+                 "Optional": Optional, "scen": scenario, "grids": grids}
+    exec(compile(ast.Module(body=[model], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace["RunRequest"]

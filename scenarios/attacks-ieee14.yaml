@@ -1,0 +1,60 @@
+# Attack demonstrations; comments describe intent, not measured outcomes.
+grid: ieee14
+solver: builtin
+duration: 10
+network: {latency_ms: 10, loss: 0, pdc_wait_ms: 20}
+scenarios:
+  # Establish the corresponding unattacked operating point.
+  - name: a14-none
+    attack: {type: none}
+  # Exercise single-channel FDI with the minimum PMU placement.
+  - name: a14-simple-min
+    pmu: {placement: minimum}
+    attack: {type: fdi-simple, target: 8, start: 3, end: 8}
+  # Compare single-channel FDI with redundant observations.
+  - name: a14-simple-red
+    pmu: {placement: redundant}
+    attack: {type: fdi-simple, target: 8, start: 3, end: 8}
+  # Exercise a gradual single-channel injection instead of a step.
+  - name: a14-simple-ramp
+    pmu: {placement: redundant}
+    attack: {type: fdi-simple, target: 8, start: 3, end: 8, ramp_s: 2}
+  # Exercise consistent multi-channel FDI with a gradual onset.
+  - name: a14-stealthy-ramp
+    pmu: {placement: redundant}
+    attack: {type: fdi-stealthy, target: 8, start: 3, end: 8, ramp_s: 2}
+  # Delay frames from PMUs observing the target bus.
+  - name: a14-delay
+    attack: {type: delay, target: 8, start: 3, end: 8, delay_ms: 100}
+  # Remove frames from PMUs observing the target bus.
+  - name: a14-drop
+    attack: {type: drop, target: 8, start: 3, end: 8}
+  # Loop pre-event noisy frames from target observers with minimum PMUs.
+  - name: a14-replay-min
+    pmu: {placement: minimum}
+    event: {type: avr_fault, bus: 6, vset: 1.12, t: 3}
+    attack: {type: replay, target: 8, start: 3, end: 8, record_s: 2}
+  # Compare targeted replay with redundant observations after the event.
+  - name: a14-replay-red
+    pmu: {placement: redundant}
+    event: {type: avr_fault, bus: 6, vset: 1.12, t: 3}
+    attack: {type: replay, target: 8, start: 3, end: 8, record_s: 2}
+  # Exercise null-target replay across all PMUs after the event.
+  - name: a14-replay-all
+    event: {type: avr_fault, bus: 6, vset: 1.12, t: 3}
+    attack: {type: replay, target: null, start: 3, end: 8}
+  # Drop corrective generator commands prompted by an AVR fault.
+  - name: a14-cmd-drop
+    event: {type: avr_fault, bus: 6, vset: 1.12, t: 3}
+    attack: {type: cmd-drop, target: 6, start: 3, end: 8}
+  # Delay corrective generator commands prompted by an AVR fault.
+  - name: a14-cmd-delay
+    event: {type: avr_fault, bus: 6, vset: 1.12, t: 3}
+    attack: {type: cmd-delay, target: 6, start: 3, end: 8, delay_ms: 500}
+  # Inject one forged generator setpoint through the normal UDP link.
+  - name: a14-cmd-inject
+    attack: {type: cmd-inject, target: 6, start: 3, end: 8, vset: 1.12}
+  # Combine a forged setpoint with stealthy FDI showing its pre-attack voltage.
+  - name: a14-coordinated
+    pmu: {placement: redundant}
+    attack: {type: coordinated, target: 6, start: 3, end: 8, vset: 1.12}

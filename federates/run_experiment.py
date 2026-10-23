@@ -18,6 +18,7 @@ from cpslib.placement import optimal_placement
 from cpslib.pmu import PmuLayout
 from cpslib.attack import plan_fdi
 from cpslib.estimation import sigma_from_polar_noise
+from cpslib.control import nearest_generators
 from cpslib import cluster
 
 CASES_DIR = os.environ.get("CPS_CASES", os.path.join(HERE, "..", "cases"))
@@ -57,12 +58,17 @@ def parse_args(argv=None):
     a.add_argument("--jitter", type=float, default=2.0, help="per-frame random delay (ms)")
     a.add_argument("--loss", type=float, default=0.0, help="packet loss rate per link, 0-1")
     a.add_argument("--pdc-wait", type=float, default=20.0, help="PDC wait window (ms)")
-    a.add_argument("--attack", default="none", choices=["none", "fdi-simple", "fdi-stealthy", "drop", "delay"])
-    a.add_argument("--target", type=int, default=None, help="attacked bus (default: highest-voltage bus)")
+    a.add_argument("--attack", default="none", choices=["none", "fdi-simple", "fdi-stealthy", "drop", "delay",
+                                                       "replay", "cmd-drop", "cmd-delay", "cmd-inject", "coordinated"])
+    a.add_argument("--target", type=int, default=None,
+                   help="attacked bus (default: highest voltage; replay: all PMUs; cmd-*/coordinated: nearest generator)")
     a.add_argument("--fake", type=float, default=None, help="voltage the attacker wants the CC to see (pu)")
     a.add_argument("--attack-start", type=float, default=3.0)
     a.add_argument("--attack-end", type=float, default=8.0)
-    a.add_argument("--attack-delay", type=float, default=100.0, help="extra delay for the delay attack (ms)")
+    a.add_argument("--attack-delay", type=float, default=100.0, help="extra delay for delay/cmd-delay (ms)")
+    a.add_argument("--record-s", type=float, default=None, help="replay recording seconds (default: min(start, end-start))")
+    a.add_argument("--ramp-s", type=float, default=0.0, help="FDI ramp seconds (default: step)")
+    a.add_argument("--attack-vset", type=float, default=1.12, help="forged generator setpoint, 0.8-1.2 pu")
     a.add_argument("--bdd", default="on", choices=["on", "off"], help="chi-square bad data detection")
     a.add_argument("--control", default="on", choices=["on", "off"])
     a.add_argument("--vmin", type=float, default=0.94)
@@ -120,6 +126,96 @@ def free_port(base):
     raise RuntimeError("no free HELICS port")
 
 
+def build_attack(args, layout, V0, event):
+    """Pure attack config/plan/target builder; no HELICS or run directory.
+
+    A null replay target selects all PMUs; an explicit bus selects its observers.
+    Command targets default to the nearest generator to the default FDI target.
+    Legacy dictionaries omit new optional keys when their behavior is unchanged.
+    """
+    net = layout.net
+    record_s = getattr(args, "record_s", None)
+    ramp_s = getattr(args, "ramp_s", 0)
+    forged = getattr(args, "attack_vset", 1.12)
+    qlim = getattr(args, "qlim", True)
+    if args.attack != "none" and (args.attack_start < 0 or args.attack_end <= args.attack_start):
+        raise ValueError("attack end must be after attack start, and start >= 0")
+    if not np.isfinite(ramp_s) or ramp_s < 0:
+        raise ValueError("ramp_s must be >= 0")
+    if not np.isfinite(forged) or not 0.8 <= forged <= 1.2:
+        raise ValueError("attack vset must be between 0.8 and 1.2 pu")
+    if record_s is not None and (not np.isfinite(record_s) or not 0 < record_s <= args.attack_start):
+        raise ValueError("record_s must be > 0 and <= attack start")
+    if args.attack == "replay" and args.attack_start <= 0:
+        raise ValueError("replay record_s requires attack start > 0")
+    # the attacker plans against the operating point it will face (including the event)
+    V_plan = V0
+    if event["type"] == "avr_fault":
+        V_plan, _, _ = net.solve_pf(vset={event["bus"]: event["vset"]}, qlim=qlim)
+    elif event["type"] == "load_step":
+        pd = np.array([b["pd"] for b in net.buses]); qd = np.array([b["qd"] for b in net.buses])
+        i = net.idx[event["bus"]]; pd[i] *= 1 + event["pct"] / 100; qd[i] *= 1 + event["pct"] / 100
+        V_plan, _, _ = net.solve_pf(pd, qd, qlim=qlim)
+    target = args.target or net.bus_ids[int(np.argmax(np.abs(V_plan)))]
+    if args.attack.startswith("cmd-") or args.attack == "coordinated":
+        gens = {g["bus"] for g in net.gens if g["status"]}
+        if args.target is None:
+            target = nearest_generators(net, gens).get(target)
+        else:
+            target = args.target
+        if target not in gens:
+            raise ValueError(f"attack '{args.attack}' needs an in-service generator bus; target {target} is not a generator bus")
+    elif target not in net.idx:
+        raise ValueError(f"target bus {target} is not in the grid")
+    attack = {"type": "none"}
+    plan = None
+    if args.attack.startswith("fdi"):
+        fake = args.fake if args.fake is not None else round(abs(V_plan[net.idx[target]]) - 0.04, 3)
+        plan = plan_fdi(layout, V_plan, target, fake, mode=args.attack.split("-")[1])
+        attack = {"type": "fdi", "targets": plan["compromised_pmus"], "deltas": plan["deltas"],
+                  "ref": plan["ref"], "v_fake": fake}
+        if ramp_s:
+            attack["ramp_s"] = ramp_s
+    elif args.attack in ("drop", "delay", "replay"):
+        # attack the PMUs that observe the target bus (its own and its neighbours')
+        col = np.abs(layout.column(net.idx[target])) > 1e-9
+        obs = sorted({layout.pmus[p]["bus"] for (p, c), r in layout.row.items() if col[r]})
+        attack = {"type": args.attack, "targets": obs, "delay_ms": args.attack_delay}
+        if args.attack == "replay":
+            attack = {"type": "replay", "targets": obs if args.target is not None else
+                      sorted(pm["bus"] for pm in layout.pmus),
+                      "record_s": record_s if record_s is not None else
+                      min(args.attack_start, args.attack_end - args.attack_start)}
+    elif args.attack.startswith("cmd-") or args.attack == "coordinated":
+        attack = {"type": args.attack, "targets": [], "gen_targets": [target]}
+        if args.attack in ("cmd-drop", "cmd-delay"):
+            attack["delay_ms"] = args.attack_delay
+        else:
+            attack["vset"] = forged
+        if args.attack == "coordinated":
+            # Use only events already in effect before the forgery. The forged
+            # setpoint overrides an earlier AVR fault at the same generator.
+            vset, pd, qd = {}, None, None
+            if event.get("t", float("inf")) < args.attack_start:
+                if event["type"] == "avr_fault":
+                    vset[event["bus"]] = event["vset"]
+                elif event["type"] == "load_step":
+                    pd = np.array([b["pd"] for b in net.buses])
+                    qd = np.array([b["qd"] for b in net.buses])
+                    i = net.idx[event["bus"]]
+                    pd[i] *= 1 + event["pct"] / 100; qd[i] *= 1 + event["pct"] / 100
+            pre, _, ok_pre = net.solve_pf(pd, qd, vset=vset, qlim=qlim)
+            vset[target] = forged
+            after, _, ok_after = net.solve_pf(pd, qd, vset=vset, qlim=qlim)
+            if not ok_pre or not ok_after:
+                raise ValueError("coordinated attack power flow did not converge")
+            fake = float(abs(pre[net.idx[target]]))
+            plan = plan_fdi(layout, after, target, fake, mode="stealthy")
+            attack.update(targets=plan["compromised_pmus"], deltas=plan["deltas"], ref=plan["ref"], v_fake=fake)
+    attack.update(start=args.attack_start, end=args.attack_end)
+    return attack, plan, target
+
+
 def build_configs(args, run_dir, cl, port):
     se_sigma = args.se_sigma if args.se_sigma is not None else sigma_from_polar_noise(
         args.noise_mag, args.noise_ang)
@@ -130,31 +226,8 @@ def build_configs(args, run_dir, cl, port):
     pmu_buses, _ = optimal_placement(net, args.placement)
     layout = PmuLayout(net, pmu_buses)
     V0, _, _ = net.solve_pf(qlim=args.qlim)
-
     event = parse_event(args.event)
-
-    # the attacker plans against the operating point it will face (including the event)
-    V_plan = V0
-    if event["type"] == "avr_fault":
-        V_plan, _, _ = net.solve_pf(vset={event["bus"]: event["vset"]}, qlim=args.qlim)
-    elif event["type"] == "load_step":
-        pd = np.array([b["pd"] for b in topo["buses"]]); qd = np.array([b["qd"] for b in topo["buses"]])
-        i = net.idx[event["bus"]]; pd[i] *= 1 + event["pct"] / 100; qd[i] *= 1 + event["pct"] / 100
-        V_plan, _, _ = net.solve_pf(pd, qd, qlim=args.qlim)
-    target = args.target or net.bus_ids[int(np.argmax(np.abs(V_plan)))]
-    attack = {"type": "none"}
-    plan = None
-    if args.attack.startswith("fdi"):
-        fake = args.fake if args.fake is not None else round(abs(V_plan[net.idx[target]]) - 0.04, 3)
-        plan = plan_fdi(layout, V_plan, target, fake, mode=args.attack.split("-")[1])
-        attack = {"type": "fdi", "targets": plan["compromised_pmus"], "deltas": plan["deltas"],
-                  "ref": plan["ref"], "v_fake": fake}
-    elif args.attack in ("drop", "delay"):
-        # attack the PMUs that observe the target bus (its own and its neighbours')
-        col = np.abs(layout.column(net.idx[target])) > 1e-9
-        obs = sorted({layout.pmus[p]["bus"] for (p, c), r in layout.row.items() if col[r]})
-        attack = {"type": args.attack, "targets": obs, "delay_ms": args.attack_delay}
-    attack.update(start=args.attack_start, end=args.attack_end)
+    attack, plan, target = build_attack(args, layout, V0, event)
 
     def link_delay():
         return round(args.latency * rng.uniform(1 - args.latency_spread, 1 + args.latency_spread), 3)
@@ -325,18 +398,30 @@ def analyze(run_dir, meta, codes, wall):
         "sets_with_true_violation_not_seen": missed,
     }
     atk = {"type": args["attack"]}
+    attack_cfg = json.load(open(os.path.join(run_dir, "ns3_config.json")))["attack"]
     if args["attack"] != "none":
         seen = [float(r[f"v{tgt}"]) for r in est if in_atk(float(r["t"]))]
         true = [true_at(float(r["t"]), tgt) for r in est if in_atk(float(r["t"]))]
         atk.update({"target_bus": tgt, "window_s": [ast, aend],
                     "compromised_pmus": meta["attack_plan"]["compromised_pmus"] if meta["attack_plan"] else
-                    json.load(open(os.path.join(run_dir, "ns3_config.json")))["attack"]["targets"],
+                    attack_cfg["targets"],
                     "detection_rate_pct": round(100 * np.mean(alarms_in), 1) if alarms_in else 0,
                     "time_to_detect_s": round(first_alarm - ast, 3) if first_alarm is not None else None,
                     "target_true_v_mean": round(float(np.mean(true)), 4) if true else None,
                     "target_seen_v_mean": round(float(np.mean(seen)), 4) if seen else None})
+    atk.update(forged_commands=ns3.get("cmds_forged", 0), commands_dropped=ns3.get("cmds_dropped", 0),
+               commands_delayed=ns3.get("cmds_delayed", 0), replayed_frames=ns3.get("replayed", 0))
+    if args["attack"] == "replay":
+        atk.update(replay_scope="all_pmus" if args["target"] is None else "target_bus_observers",
+                   record_s=attack_cfg["record_s"])
+    if args["attack"].startswith("fdi"):
+        atk["ramp_s"] = args.get("ramp_s", 0)
+    if args["attack"].startswith("cmd-") or args["attack"] == "coordinated":
+        atk["generator_targets"] = attack_cfg["gen_targets"]
+    if args["attack"] in ("cmd-inject", "coordinated"):
+        atk.update(vset=attack_cfg["vset"], forged_source="impersonated CC socket over generator UDP link")
     s["attack"] = atk
-    s["control_center"]["se_sigma"] = meta["control_center"]["se_sigma"]
+    s["control_center"]["se_sigma"] = (meta.get("control_center") or {}).get("se_sigma")
     with open(os.path.join(run_dir, "summary.json"), "w") as fh:
         json.dump(s, fh, indent=2)
     return s

@@ -57,22 +57,9 @@ scenarios:
     assert second.network.loss == 0.1
 
 
-@pytest.fixture(scope="module")
-def run_request_class(repo_root):
-    # Load the actual API model without FastAPI or app import side effects
-    # (directory creation and worker threads). No production code is copied.
-    import ast
-    from typing import Optional
-
-    from pydantic import BaseModel, Field
-    from cpslib import grids
-
-    path = repo_root / "webapp" / "app.py"
-    tree = ast.parse(path.read_text())
-    model = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RunRequest")
-    namespace = {"BaseModel": BaseModel, "Field": Field, "Optional": Optional, "grids": grids}
-    exec(compile(ast.Module(body=[model], type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["RunRequest"]
+@pytest.fixture
+def run_request_class(run_request_model):
+    return run_request_model
 
 
 @pytest.mark.parametrize(
