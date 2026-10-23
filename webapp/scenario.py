@@ -17,6 +17,8 @@ class Strict(BaseModel):
 class Pmu(Strict):
     placement: Literal["minimum", "redundant"] = "minimum"
     rate: float = Field(30, ge=1, le=120)
+    noise_mag: float = Field(0.001, ge=0, le=0.05)
+    noise_ang: float = Field(0.001, ge=0, le=0.05)
 
 
 class NetworkCfg(Strict):
@@ -68,6 +70,7 @@ class Control(Strict):
     voltage_control: bool = True
     vmin: float = Field(0.94, ge=0.5, le=1.0)
     vmax: float = Field(1.08, ge=1.0, le=1.5)
+    se_sigma: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
 
 class Scenario(Strict):
@@ -119,6 +122,8 @@ class Scenario(Strict):
             "attack_start": self.attack.start, "attack_end": self.attack.end, "attack_delay": self.attack.delay_ms,
             "bdd": "on" if self.control.bdd else "off", "control": "on" if self.control.voltage_control else "off",
             "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed,
+            "noise_mag": self.pmu.noise_mag, "noise_ang": self.pmu.noise_ang,
+            "se_sigma": self.control.se_sigma,
         }
 
 

@@ -2,17 +2,29 @@ Run from the repository root with Python 3.12 and numpy, scipy, pyyaml,
 pydantic (v2), and pytest available:
 
 ```sh
-python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q
 # Supplied development environment:
-~/.boss-venv/bin/python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 ~/.boss-venv/bin/python -B -m pytest -q
 ```
 
 No HELICS, GridPACK, MPI, NS-3, or pandapower is required. Seeded statistical
-checks use 300 trials per grid. Strict xfails record F1 (BDD calibration,
-WP2), F2 (generator reactive limits, WP3), and S11: estimator weights depend on
-measured |z| (sig = sigma*|z|), so J is not exactly invariant under a = H c;
-decision pending in WP2. S11 is not a confirmed bug. An unexpected pass fails
-the suite so the corresponding marker must be reviewed when behaviour changes.
+checks reproduce NS-3's independent polar noise draws and use the effective
+sigma from the default experiment config (derived from the configured magnitude
+and angle noise). F1 calibration checks use 1000 trials each on IEEE 14 and 118
+with minimum PMU placement: false alarms must fall within 0.5–2 times alpha=0.01
+and mean J/dof within [0.9, 1.1]. A 200-trial IEEE 118 test requires at least 90%
+detection of a 0.01 pu simple FDI on the most-measured bus.
+
+S11 retains measured-|z| weighting (`sig = sigma*|z|`); exact J invariance under
+`a = H c` is not expected. On IEEE 14 with redundancy 2, target bus 6 and a
+−0.05 pu stealthy FDI, 300 paired noise draws must give an alarm rate at most
+2*alpha and mean absolute relative J change at most 10%. F1 and S11 are passing
+regressions. Strict xfails still record F2 (generator reactive limits, WP3).
+An unexpected pass fails the suite so its marker must be reviewed.
+
+Noise config tests cover derivation, explicit overrides, persisted effective
+sigma, CLI validation, and scenario → API model → CLI forwarding. The API model
+is loaded from its AST to avoid FastAPI and background-worker dependencies.
 
 Passing estimator checks cover complex-valued degrees of freedom and chi-square
 thresholds on IEEE 14 and 118, including excluded channels. PMU-loss checks use

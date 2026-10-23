@@ -17,6 +17,7 @@ from cpslib.network import Network
 from cpslib.placement import optimal_placement
 from cpslib.pmu import PmuLayout
 from cpslib.attack import plan_fdi
+from cpslib.estimation import sigma_from_polar_noise
 from cpslib import cluster
 
 CASES_DIR = os.environ.get("CPS_CASES", os.path.join(HERE, "..", "cases"))
@@ -39,6 +40,13 @@ def parse_args(argv=None):
                    help="grid federate step (s); default 0.5 (qss) or one PMU frame (dynamic)")
     a.add_argument("--dyn-step", type=float, default=0.005, help="largest integration step of the dynamic simulation (s)")
     a.add_argument("--rate", type=float, default=30.0, help="PMU reporting rate (frames/s)")
+    a.add_argument("--noise-mag", type=float, default=0.001,
+                   help="PMU relative magnitude noise std-dev (0..0.05; default: 0.001)")
+    a.add_argument("--noise-ang", type=float, default=0.001,
+                   help="PMU angle noise std-dev in radians (0..0.05; default: 0.001)")
+    a.add_argument("--se-sigma", type=float, default=None,
+                   help="override relative rectangular per-component noise std-dev (>0); "
+                        "default: sqrt((noise_mag^2 + noise_ang^2)/2)")
     a.add_argument("--solver", default="gridpack", choices=["gridpack", "builtin"])
     a.add_argument("--placement", type=int, default=1, choices=[1, 2],
                    help="1 = minimum PMUs for observability, 2 = every bus seen by two PMUs")
@@ -62,7 +70,13 @@ def parse_args(argv=None):
                         "fault:<bus>:<duration s>:<t> | line:<from>:<to>:<t> | gen:<bus>:<t> (dynamic)")
     a.add_argument("--seed", type=int, default=1)
     a.add_argument("--out", default=os.environ.get("CPS_RESULTS", os.path.join(HERE, "..", "results", "runs")))
-    return a.parse_args(argv)
+    args = a.parse_args(argv)
+    for name in ("noise_mag", "noise_ang"):
+        if not 0 <= getattr(args, name) <= 0.05:
+            a.error(f"--{name.replace('_', '-')} must be finite and within 0..0.05")
+    if args.se_sigma is not None and not (np.isfinite(args.se_sigma) and args.se_sigma > 0):
+        a.error("--se-sigma must be finite and >0")
+    return args
 
 
 def parse_event(text):
@@ -105,6 +119,8 @@ def free_port(base):
 
 
 def build_configs(args, run_dir, cl, port):
+    se_sigma = args.se_sigma if args.se_sigma is not None else sigma_from_polar_noise(
+        args.noise_mag, args.noise_ang)
     topo_path = os.path.join(case_dir(args), "topology.json")
     topo = json.load(open(topo_path))
     net = Network(topo)
@@ -144,7 +160,7 @@ def build_configs(args, run_dir, cl, port):
     gens = sorted({g["bus"] for g in topo["gens"] if g["status"]})
     ns3 = {"outdir": run_dir, "duration": args.duration, "rate": args.rate, "seed": args.seed,
            "pdc_wait_ms": args.pdc_wait, "proc_ms": 2.0, "jitter_ms": args.jitter, "loss": args.loss,
-           "access_rate": "10Mbps", "noise": {"mag": 0.001, "ang": 0.001}, "attack": attack,
+           "access_rate": "10Mbps", "noise": {"mag": args.noise_mag, "ang": args.noise_ang}, "attack": attack,
            "pmus": [{"id": pm["id"], "bus": pm["bus"], "nch": len(pm["channels"]), "delay_ms": link_delay()}
                     for pm in layout.pmus],
            "gens": [{"bus": g, "delay_ms": link_delay()} for g in gens],
@@ -153,7 +169,7 @@ def build_configs(args, run_dir, cl, port):
            "duration": args.duration, "mode": args.mode, "dyn_step": args.dyn_step, "grid_step": args.grid_step,
            "seed": args.seed, "solver": args.solver, "pmu_buses": pmu_buses,
            "load": {"amplitude": 0.02, "period": 20.0, "walk": 0.002}, "event": event,
-           "se_sigma": 0.002, "bdd_alpha": 0.01, "bdd": args.bdd == "on",
+           "se_sigma": se_sigma, "bdd_alpha": 0.01, "bdd": args.bdd == "on",
            "control": {"enabled": args.control == "on", "vmin": args.vmin, "vmax": args.vmax, "step": 0.01,
                        "deadband": 0.003, "cooldown": 1.0, "vset_min": 0.95, "vset_max": 1.10},
            "mpi": {"np": args.mpi_np, "hostfile": cl["mpi"].get("hostfile") if cl["nodes"] else None},
@@ -167,7 +183,8 @@ def build_configs(args, run_dir, cl, port):
             "cluster": {"placement": {r: cl["placement"].get(r, cl["head"]) for r in ("broker", "grid", "ns3", "cc")},
                         "mpi_np": args.mpi_np, "mpi_hosts": [n["host"] for n in cl["nodes"]], "helics_port": port},
             "pmus": layout.describe(), "n_buses": net.n, "n_branches": len(net.branches),
-            "n_gens": len(gens), "base_case_max_v": float(np.abs(V0).max())}
+            "n_gens": len(gens), "base_case_max_v": float(np.abs(V0).max()),
+            "control_center": {"se_sigma": se_sigma}}
     for name, obj in (("ns3_config.json", ns3), ("run_config.json", run), ("meta.json", meta)):
         with open(os.path.join(run_dir, name), "w") as fh:
             json.dump(obj, fh, indent=1)
@@ -316,6 +333,7 @@ def analyze(run_dir, meta, codes, wall):
                     "target_true_v_mean": round(float(np.mean(true)), 4) if true else None,
                     "target_seen_v_mean": round(float(np.mean(seen)), 4) if seen else None})
     s["attack"] = atk
+    s["control_center"]["se_sigma"] = meta["control_center"]["se_sigma"]
     with open(os.path.join(run_dir, "summary.json"), "w") as fh:
         json.dump(s, fh, indent=2)
     return s
