@@ -81,7 +81,8 @@ class StateEstimator:
             worst = self._largest_normalized_residual(keys, rows, H, Hh, lu, r, sig)
         self.last = V
         return {"V": V, "J": J, "threshold": thr, "dof": dof, "alarm": alarm,
-                "observable": bool(observable), "m": len(rows), "worst": worst}
+                "observable": bool(observable), "m": len(rows), "worst": worst,
+                "pseudo_measurements": pseudo}
 
     EXACT_ROWS = 1500      # up to this many channels every normalized residual is computed
     CANDIDATE_PMUS = 25    # beyond it, only the channels of the PMUs with the largest raw residuals

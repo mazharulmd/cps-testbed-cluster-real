@@ -26,6 +26,7 @@ import helics as h
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cpslib.network import Network
 from cpslib.pmu import PmuLayout
+from cpslib.control import AppliedCommands
 from cpslib.gridpack import (GridPackMPISolver, GridPackDynamicSolver, server_available,
                              DSF_SERVER)
 
@@ -79,6 +80,7 @@ def main(cfg_path):
     pub = h.helicsFederateRegisterGlobalPublication(fed, "grid/meas", h.HELICS_DATA_TYPE_STRING, "")
     # true state for observers (the live dashboard); no federate in the loop depends on it
     pub_status = h.helicsFederateRegisterGlobalPublication(fed, "grid/status", h.HELICS_DATA_TYPE_STRING, "")
+    pub_gen = h.helicsFederateRegisterGlobalPublication(fed, "grid/generators", h.HELICS_DATA_TYPE_STRING, "")
     sub = h.helicsFederateRegisterSubscription(fed, "ns3/cmd_delivered", "")
     h.helicsFederateEnterExecutingMode(fed)
     print(f"[GRID] {len(topo['buses'])}-bus system, {len(cfg['pmu_buses'])} PMUs, solver={cfg['solver']}", flush=True)
@@ -88,7 +90,7 @@ def main(cfg_path):
     tw.writerow(["t"] + [f"v{b}" for b in net.bus_ids])
     applied = open(os.path.join(out, "commands_applied.csv"), "w", newline="")
     aw = csv.writer(applied)
-    aw.writerow(["t_applied", "gen_bus", "vset", "issued_t", "delivered_t", "reason"])
+    aw.writerow(["t_applied", "gen_bus", "vset", "issued_t", "delivered_t", "reason", "id"])
     steps = open(os.path.join(out, "grid_steps.csv"), "w", newline="")
     sw = csv.writer(steps)
     sw.writerow(["t", "solver", "converged", "iterations", "total_load_mw", "max_v", "max_v_bus", "min_v", "min_v_bus",
@@ -104,26 +106,34 @@ def main(cfg_path):
                     + [f"f_g{x}" for x in glabels] + [f"angle_g{x}" for x in glabels] + [f"p_g{x}" for x in glabels])
         f_nom = float(cfg.get("f_nominal", 60.0))
 
-    seen_cmds = set()
+    applied_commands = AppliedCommands()
     k = 0
+    last_commands = None
     while True:
         t = round(k * dt, 9)
         if t > T + 1e-9:
             break
         h.helicsFederateRequestTime(fed, t)
-        applied_now = []
+        applied_now, acks = [], []
+        commands = []
         if h.helicsInputIsUpdated(sub):
-            for c in json.loads(h.helicsInputGetString(sub) or "[]"):
-                if c.get("id") in seen_cmds:
-                    continue
-                seen_cmds.add(c.get("id"))
-                vset[c["gen_bus"]] = c["vset"]
-                if dynamic:
-                    solver.set_vset(c["gen_bus"], c["vset"])
-                aw.writerow([t, c["gen_bus"], c["vset"], c.get("issued_t"), c.get("delivered_t"), c.get("reason", "")])
-                applied_now.append({"gen_bus": c["gen_bus"], "vset": c["vset"], "issued_t": c.get("issued_t"),
-                                    "delivered_t": c.get("delivered_t"), "reason": c.get("reason", "")})
-                print(f"[GRID] t={t:.2f}s command applied: gen {c['gen_bus']} vset -> {c['vset']:.3f} pu", flush=True)
+            payload = h.helicsInputGetString(sub)
+            if payload != last_commands:
+                commands = json.loads(payload or "[]")
+                last_commands = payload
+        for c in commands:
+            apply, ack = applied_commands.receive(c, t)
+            # Re-ack retries even if the first ack was lost. Do not reapply.
+            acks.append(ack)
+            if not apply:
+                continue
+            vset[c["gen_bus"]] = c["vset"]
+            if dynamic:
+                solver.set_vset(c["gen_bus"], c["vset"])
+            aw.writerow([t, c["gen_bus"], c["vset"], c.get("issued_t"), c.get("delivered_t"), c.get("reason", ""), c["id"]])
+            applied_now.append({"gen_bus": c["gen_bus"], "vset": c["vset"], "issued_t": c.get("issued_t"),
+                                "delivered_t": c.get("delivered_t"), "reason": c.get("reason", ""), "id": c["id"]})
+            print(f"[GRID] t={t:.2f}s command applied: gen {c['gen_bus']} vset -> {c['vset']:.3f} pu", flush=True)
         # loads
         walk = walk + lp["walk"] * np.sqrt(dt) * rng.standard_normal(net.n)
         scale = 1 + lp["amplitude"] * np.sin(2 * np.pi * t / lp["period"]) + walk
@@ -135,12 +145,12 @@ def main(cfg_path):
             vset[ev["bus"]] = ev["vset"]; ev["_done"] = True
             if dynamic:
                 solver.set_vset(ev["bus"], ev["vset"])
-            aw.writerow([t, ev["bus"], ev["vset"], "", "", "event: AVR setpoint fault"])
+            aw.writerow([t, ev["bus"], ev["vset"], "", "", "event: AVR setpoint fault", ""])
             applied_now.append({"gen_bus": ev["bus"], "vset": ev["vset"], "reason": "event: AVR setpoint fault"})
             print(f"[GRID] t={t:.2f}s EVENT: AVR fault at gen {ev['bus']}, vset -> {ev['vset']}", flush=True)
         if dynamic and ev.get("type") in ("bus_fault", "line_trip", "gen_trip") and ev["t"] <= t and not ev.get("_done"):
             ev["_done"] = True     # applied inside GridPACK at its scheduled time; logged here
-            aw.writerow([ev["t"], ev.get("bus", ev.get("from", "")), "", "", "", f"event: {ev['type'].replace('_', ' ')}"])
+            aw.writerow([ev["t"], ev.get("bus", ev.get("from", "")), "", "", "", f"event: {ev['type'].replace('_', ' ')}", ""])
             applied_now.append({"gen_bus": ev.get("bus", ev.get("from")), "reason": f"event: {ev['type'].replace('_', ' ')}"})
             print(f"[GRID] t={t:.2f}s EVENT: {ev['type']} {ev}", flush=True)
         # solve
@@ -216,6 +226,20 @@ def main(cfg_path):
         meas = {str(pm["bus"]): ph for pm, ph in zip(layout.pmus, layout.measure(V))}
         h.helicsPublicationPublishString(pub, json.dumps({"t": t, "pmus": meas}))
         h.helicsPublicationPublishString(pub_status, json.dumps(status))
+        # This is grid -> NS-3 input only. CC receives UDP-delivered packets,
+        # never a direct subscription to the true state publication.
+        generators = [{"gen_bus": bus, "vset": value, "t": t} for bus, value in vset.items()]
+        if dynamic:
+            # Preserve dsf_server's per-machine watch Q in pu. Its base may be
+            # model-dependent, so do not label it MVAr or sum different machines.
+            for packet in generators:
+                packet["q_pu_by_machine"] = {str(g["id"]): g["q"] for g in gens
+                                             if g["online"] and g["bus"] == packet["gen_bus"]}
+        else:
+            qbus = (V * np.conj(net.Ybus @ V)).imag * net.base + qd
+            for packet in generators:
+                packet["q_mvar"] = float(qbus[net.idx[packet["gen_bus"]]])
+        h.helicsPublicationPublishString(pub_gen, json.dumps({"t": t, "generators": generators, "acks": acks}))
         k += 1
 
     for f in (truth, applied, steps) + ((dyn,) if dynamic else ()):

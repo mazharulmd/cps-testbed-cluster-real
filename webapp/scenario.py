@@ -81,6 +81,8 @@ class Control(Strict):
     vmin: float = Field(0.94, ge=0.5, le=1.0)
     vmax: float = Field(1.08, ge=1.0, le=1.5)
     se_sigma: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    telemetry_s: float = Field(2.0, gt=0, allow_inf_nan=False)
+    ack_timeout_s: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
 
 class Scenario(Strict):
@@ -136,6 +138,7 @@ class Scenario(Strict):
             "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed,
             "noise_mag": self.pmu.noise_mag, "noise_ang": self.pmu.noise_ang,
             "se_sigma": self.control.se_sigma, "qlim": self.qlim,
+            "telemetry_s": self.control.telemetry_s, "ack_timeout_s": self.control.ack_timeout_s,
         }
 
 

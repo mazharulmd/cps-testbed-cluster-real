@@ -34,4 +34,15 @@ IEEE 118 selects a PMU from `layout.sees` whose removal leaves a bus unseen whil
 retaining at least 118 channels. It also checks that only the pseudo-measurement
 factorization runs: otherwise a singular-matrix fallback could mask removal of
 the topological observability guard. Suppressing alarms when unobservable records
-current behaviour; the control-center fix comes in WP4.
+the retained metric semantics; WP4 separately holds control when unobservable.
+
+WP4 regressions in `test_control_correctness.py` cover final-estimate safety,
+PMU loss with a gross error, observability lost during BDD removal, applied
+setpoint reconciliation, one retry then timeout, idempotent application,
+late/duplicate/unknown acks, end-of-run accounting, config/schema/API forwarding,
+and summary counters. `test_federate_protocol.py` runs the Python federate loops
+with an in-memory HELICS double and real IEEE 14 estimation/power flow. It checks
+that unsafe estimates emit no command, timers run during PDC outages, delivered
+telemetry/forged acks affect subsequent commands, and retries cannot undo an AVR
+fault by applying a command twice. These tests require no HELICS installation.
+NS-3 compilation and real federation runs remain reviewer checks.

@@ -18,7 +18,7 @@ from cpslib.placement import optimal_placement
 from cpslib.pmu import PmuLayout
 from cpslib.attack import plan_fdi
 from cpslib.estimation import sigma_from_polar_noise
-from cpslib.control import nearest_generators
+from cpslib.control import nearest_generators, default_ack_timeout, command_summary
 from cpslib import cluster
 
 CASES_DIR = os.environ.get("CPS_CASES", os.path.join(HERE, "..", "cases"))
@@ -71,6 +71,9 @@ def parse_args(argv=None):
     a.add_argument("--attack-vset", type=float, default=1.12, help="forged generator setpoint, 0.8-1.2 pu")
     a.add_argument("--bdd", default="on", choices=["on", "off"], help="chi-square bad data detection")
     a.add_argument("--control", default="on", choices=["on", "off"])
+    a.add_argument("--telemetry-s", type=float, default=2.0, help="generator setpoint telemetry interval (s; default 2)")
+    a.add_argument("--ack-timeout-s", type=float, default=None,
+                   help="command ack timeout (s; default twice the expected maximum application round trip)")
     a.add_argument("--vmin", type=float, default=0.94)
     a.add_argument("--vmax", type=float, default=1.08)
     a.add_argument("--event", default="none",
@@ -84,6 +87,10 @@ def parse_args(argv=None):
             a.error(f"--{name.replace('_', '-')} must be finite and within 0..0.05")
     if args.se_sigma is not None and not (np.isfinite(args.se_sigma) and args.se_sigma > 0):
         a.error("--se-sigma must be finite and >0")
+    for name in ("telemetry_s", "ack_timeout_s"):
+        value = getattr(args, name)
+        if value is not None and not (np.isfinite(value) and value > 0):
+            a.error(f"--{name.replace('_', '-')} must be finite and >0")
     return args
 
 
@@ -240,13 +247,18 @@ def build_configs(args, run_dir, cl, port):
                     for pm in layout.pmus],
            "gens": [{"bus": g, "delay_ms": link_delay()} for g in gens],
            "helics_core_init": cluster.core_init(cl, cl["placement"].get("ns3", cl["head"]), port)}
+    grid_step = args.grid_step if args.grid_step is not None else (1 / args.rate if args.mode == "dynamic" else 0.5)
+    ack_timeout = args.ack_timeout_s if args.ack_timeout_s is not None else default_ack_timeout(
+        max((g["delay_ms"] for g in ns3["gens"]), default=0), grid_step, args.rate)
+    ns3["telemetry_s"] = args.telemetry_s
     run = {"outdir": run_dir, "topology": topo_path, "grid_dir": case_dir(args), "case": args.case,
-           "duration": args.duration, "mode": args.mode, "dyn_step": args.dyn_step, "grid_step": args.grid_step,
+           "duration": args.duration, "mode": args.mode, "dyn_step": args.dyn_step, "grid_step": grid_step,
            "seed": args.seed, "solver": args.solver, "pmu_buses": pmu_buses,
            "load": {"amplitude": 0.02, "period": 20.0, "walk": 0.002}, "event": event,
            "se_sigma": se_sigma, "bdd_alpha": 0.01, "bdd": args.bdd == "on",
            "control": {"enabled": args.control == "on", "vmin": args.vmin, "vmax": args.vmax, "step": 0.01,
-                       "deadband": 0.003, "cooldown": 1.0, "vset_min": 0.95, "vset_max": 1.10},
+                       "deadband": 0.003, "cooldown": 1.0, "vset_min": 0.95, "vset_max": 1.10,
+                       "telemetry_s": args.telemetry_s, "ack_timeout_s": ack_timeout},
            "mpi": {"np": args.mpi_np, "hostfile": cl["mpi"].get("hostfile") if cl["nodes"] else None},
            "helics_port": port, "helics_core_init": cluster.core_init(cl, cl["placement"].get("grid", cl["head"]), port),
            "cc_core_init": cluster.core_init(cl, cl["placement"].get("cc", cl["head"]), port),
@@ -260,7 +272,7 @@ def build_configs(args, run_dir, cl, port):
                         "mpi_np": args.mpi_np, "mpi_hosts": [n["host"] for n in cl["nodes"]], "helics_port": port},
             "pmus": layout.describe(), "n_buses": net.n, "n_branches": len(net.branches),
             "n_gens": len(gens), "base_case_max_v": float(np.abs(V0).max()),
-            "control_center": {"se_sigma": se_sigma}}
+            "control_center": {"se_sigma": se_sigma, "telemetry_s": args.telemetry_s, "ack_timeout_s": ack_timeout}}
     for name, obj in (("ns3_config.json", ns3), ("run_config.json", run), ("meta.json", meta)):
         with open(os.path.join(run_dir, name), "w") as fh:
             json.dump(obj, fh, indent=1)
@@ -397,6 +409,14 @@ def analyze(run_dir, meta, codes, wall):
         "false_alarm_rate_pct": round(100 * np.mean(alarms_out), 2) if alarms_out else 0,
         "sets_with_true_violation_not_seen": missed,
     }
+    reasons = {}
+    for row in cc:
+        reason = row.get("hold_reason", "")
+        if reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    s["control_center"]["hold_reason_counts"] = reasons
+    cmd_path = os.path.join(run_dir, "cc_commands.csv")
+    s["commands"] = command_summary(read_csv(cmd_path) if os.path.exists(cmd_path) else [])
     atk = {"type": args["attack"]}
     attack_cfg = json.load(open(os.path.join(run_dir, "ns3_config.json")))["attack"]
     if args["attack"] != "none":
@@ -422,6 +442,8 @@ def analyze(run_dir, meta, codes, wall):
         atk.update(vset=attack_cfg["vset"], forged_source="impersonated CC socket over generator UDP link")
     s["attack"] = atk
     s["control_center"]["se_sigma"] = (meta.get("control_center") or {}).get("se_sigma")
+    for name in ("telemetry_s", "ack_timeout_s"):
+        s["control_center"][name] = (meta.get("control_center") or {}).get(name)
     with open(os.path.join(run_dir, "summary.json"), "w") as fh:
         json.dump(s, fh, indent=2)
     return s

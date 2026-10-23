@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <complex>
+#include <cmath>
 #include <set>
 #include <vector>
 #include <map>
@@ -258,7 +259,11 @@ static std::vector<std::vector<cplx>> state;
 static bool haveState = false;
 static std::map<uint64_t, Buf> bufs;
 static std::map<std::pair<uint64_t, uint32_t>, Rec> recs;
-static json outSets = json::array(), outCmds = json::array();
+static json outSets = json::array(), outCmds = json::array(), outGenerators = json::array();
+static json generatorState = json::array();
+static std::map<uint32_t, Ptr<Socket>> genFeedbackSock;
+static double telemetryS = 2.0;
+static uint64_t telemetrySent = 0, telemetryDelivered = 0, acksSent = 0, acksDelivered = 0;
 static Ptr<NormalRandomVariable> noise;
 static Ptr<UniformRandomVariable> uni;
 static Ptr<Socket> ccCmdSock;
@@ -443,6 +448,56 @@ GenReceive (uint32_t bus, Ptr<Socket> socket)
     }
 }
 
+// Reverse generator traffic uses the same point-to-point links as commands.
+// Command attacks deliberately intercept only CC -> generator traffic.
+void
+CcGeneratorReceive (Ptr<Socket> socket)
+{
+  Ptr<Packet> pkt;
+  while ((pkt = socket->Recv ()))
+    {
+      std::string s (pkt->GetSize (), '\0');
+      pkt->CopyData ((uint8_t *) s.data (), s.size ());
+      json packet = json::parse (s, nullptr, false);
+      if (packet.is_discarded ())
+        continue;
+      packet["delivered_t"] = Simulator::Now ().GetSeconds ();
+      if (packet.value ("type", std::string ()) == "telemetry")
+        telemetryDelivered++;
+      else if (packet.value ("type", std::string ()) == "ack")
+        acksDelivered++;
+      else
+        continue;
+      outGenerators.push_back (packet);
+    }
+}
+
+void
+SendGeneratorPacket (json packet)
+{
+  uint32_t bus = packet["gen_bus"].get<uint32_t> ();
+  if (!genFeedbackSock.count (bus))
+    return;
+  std::string s = packet.dump ();
+  genFeedbackSock[bus]->Send (Create<Packet> ((const uint8_t *) s.data (), s.size ()));
+  if (packet.value ("type", std::string ()) == "telemetry")
+    telemetrySent++;
+  else
+    acksSent++;
+}
+
+void
+SampleGenerators ()
+{
+  // Use the latest grid-reported setpoint/Q, with its original sample time.
+  for (auto packet : generatorState)
+    {
+      packet["type"] = "telemetry";
+      SendGeneratorPacket (packet);
+    }
+  Simulator::Schedule (Seconds (telemetryS), &SampleGenerators);
+}
+
 void
 TransmitCommand (json cmd)
 {
@@ -512,6 +567,8 @@ Run (const std::string &cfgPath)
   std::string outdir = cfg["outdir"];
   double duration = cfg.value ("duration", 10.0);
   rate = cfg.value ("rate", 30.0);
+  telemetryS = cfg.value ("telemetry_s", 2.0);
+  NS_ABORT_MSG_IF (!std::isfinite (telemetryS) || telemetryS <= 0, "telemetry_s must be finite and positive");
   pdcWaitS = cfg.value ("pdc_wait_ms", 20.0) / 1000.0;
   procMs = cfg.value ("proc_ms", 2.0);
   jitterMs = cfg.value ("jitter_ms", 2.0);
@@ -597,6 +654,10 @@ Run (const std::string &cfgPath)
       state.push_back (std::vector<cplx> (p.nch, cplx (0, 0)));
     }
 
+  Ptr<Socket> genRx = Socket::CreateSocket (cc.Get (0), UdpSocketFactory::GetTypeId ());
+  genRx->Bind (InetSocketAddress (Ipv4Address::GetAny (), 5001));
+  genRx->SetRecvCallback (MakeCallback (&CcGeneratorReceive));
+
   for (size_t g = 0; g < cfg["gens"].size (); ++g)
     {
       json &gc = cfg["gens"][g];
@@ -608,6 +669,10 @@ Run (const std::string &cfgPath)
       Ipv4InterfaceContainer ifc = addr.Assign (d);
       addr.NewNetwork ();
       genAddr[bus] = ifc.GetAddress (0);
+      Ptr<Socket> feedback = Socket::CreateSocket (genNodes.Get (g), UdpSocketFactory::GetTypeId ());
+      feedback->Bind ();
+      feedback->Connect (InetSocketAddress (ifc.GetAddress (1), 5001));
+      genFeedbackSock[bus] = feedback;
       Ptr<Socket> s = Socket::CreateSocket (genNodes.Get (g), UdpSocketFactory::GetTypeId ());
       s->Bind (InetSocketAddress (Ipv4Address::GetAny (), 5000));
       s->SetRecvCallback (MakeBoundCallback (&GenReceive, bus));
@@ -627,8 +692,10 @@ Run (const std::string &cfgPath)
   auto fed = std::make_shared<helics::ValueFederate> ("ns3_network", fi);
   auto subMeas = fed->registerSubscription ("grid/meas");
   auto subCmd = fed->registerSubscription ("cc/commands");
+  auto subGenerators = fed->registerSubscription ("grid/generators");
   auto pubSets = fed->registerGlobalPublication<std::string> ("ns3/pdc");
   auto pubCmd = fed->registerGlobalPublication<std::string> ("ns3/cmd_delivered");
+  auto pubGenerators = fed->registerGlobalPublication<std::string> ("ns3/generators");
   // what happens inside the network, for the dashboard's live view (no federate depends on it)
   auto pubStatus = fed->registerGlobalPublication<std::string> ("ns3/status");
   stats.assign (pmus.size (), Stat ());
@@ -639,7 +706,8 @@ Run (const std::string &cfgPath)
 
   // HELICS can report an input as updated again without a new publication, so the
   // last payload handled is remembered and repeats are ignored
-  std::string lastMeas, lastCmds;
+  std::string lastMeas, lastCmds, lastGenerators;
+  bool telemetryStarted = false;
   uint64_t K = uint64_t (std::llround (duration * rate));
   for (uint64_t k = 0; k <= K; ++k)
     {
@@ -654,6 +722,30 @@ Run (const std::string &cfgPath)
         {
           pubCmd.publish (outCmds.dump ());
           outCmds = json::array ();
+        }
+      if (!outGenerators.empty ())
+        {
+          pubGenerators.publish (outGenerators.dump ());
+          outGenerators = json::array ();
+        }
+      if (subGenerators.isUpdated () && subGenerators.getString () != lastGenerators)
+        {
+          lastGenerators = subGenerators.getString ();
+          json m = json::parse (lastGenerators, nullptr, false);
+          if (!m.is_discarded ())
+            {
+              generatorState = m.value ("generators", json::array ());
+              for (auto ack : m.value ("acks", json::array ()))
+                {
+                  ack["type"] = "ack";
+                  SendGeneratorPacket (ack);
+                }
+              if (!telemetryStarted && !generatorState.empty ())
+                {
+                  telemetryStarted = true;
+                  Simulator::ScheduleNow (&SampleGenerators);
+                }
+            }
         }
       if (subMeas.isUpdated () && subMeas.getString () != lastMeas)
         {
@@ -755,7 +847,11 @@ Run (const std::string &cfgPath)
                   {"replayed", replayed},
                   {"cmds_dropped", cmdsDropped},
                   {"cmds_delayed", cmdsDelayed},
-                  {"cmds_forged", cmdsForged}};
+                  {"cmds_forged", cmdsForged},
+                  {"telemetry_sent", telemetrySent},
+                  {"telemetry_delivered", telemetryDelivered},
+                  {"acks_sent", acksSent},
+                  {"acks_delivered", acksDelivered}};
   std::ofstream(outdir + "/ns3_summary.json") << summary.dump (2);
   std::cout << "[NS3] done: " << counts["delivered"] << "/" << total << " frames delivered" << std::endl;
   Simulator::Destroy ();
