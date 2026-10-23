@@ -72,8 +72,29 @@ def test_legacy_dicts_are_identical(kind, event, tmp_path, repo_root):
     cluster = {'placement': {}, 'head': 'localhost', 'nodes': [], 'mpi': {}}
     meta = run.build_configs(args, str(tmp_path), cluster, 23400)
     attack = json.loads((tmp_path / 'ns3_config.json').read_text())['attack']
-    assert attack == frozen[kind + '|' + event]
+    assert_same_config(attack, frozen[kind + '|' + event])
     assert meta['target_bus'] == 8
+
+
+def assert_same_config(actual, expected, path='attack'):
+    """Same keys, types and non-float values; floats to 1e-9 relative.
+
+    FDI offsets come from a power flow and sparse solves, whose last bits depend on the
+    numpy/scipy build (GitHub CI installs the latest), so exact float equality is flaky.
+    """
+    assert type(actual) is type(expected), path
+    if isinstance(expected, dict):
+        assert actual.keys() == expected.keys(), path
+        for key in expected:
+            assert_same_config(actual[key], expected[key], f'{path}.{key}')
+    elif isinstance(expected, list):
+        assert len(actual) == len(expected), path
+        for i, (a, e) in enumerate(zip(actual, expected)):
+            assert_same_config(a, e, f'{path}[{i}]')
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12), path
+    else:
+        assert actual == expected, path
 
 
 @pytest.mark.parametrize('kind', ['fdi-simple', 'fdi-stealthy'])
