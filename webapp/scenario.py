@@ -84,6 +84,7 @@ class Scenario(Strict):
     event: Event = Event()
     attack: Attack = Attack()
     control: Control = Control()
+    qlim: bool = True
 
     @model_validator(mode="after")
     def _mode(self):
@@ -118,7 +119,7 @@ class Scenario(Strict):
             "attack": self.attack.type, "target": self.attack.target, "fake": self.attack.fake,
             "attack_start": self.attack.start, "attack_end": self.attack.end, "attack_delay": self.attack.delay_ms,
             "bdd": "on" if self.control.bdd else "off", "control": "on" if self.control.voltage_control else "off",
-            "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed,
+            "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed, "qlim": self.qlim,
         }
 
 

@@ -127,7 +127,8 @@ def reference(ppc, topo, path):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "federates"))
     from cpslib.network import Network
     net = Network(topo)
-    V, it, ok = net.solve_pf()
+    # Historical references are unconstrained; keep them reproducible.
+    V, it, ok = net.solve_pf(qlim=False)
     vm, va = np.abs(V), np.rad2deg(np.angle(V))
     va -= va[[b["type"] for b in net.buses].index(3)]
     bus = ppc["bus"]
@@ -148,7 +149,7 @@ def main(names):
         raw = f"IEEE{n}.raw"
         write_raw(os.path.join(d, raw), ppc, f"IEEE {n}-bus test system")
         with open(os.path.join(d, "input.xml"), "w") as fh:
-            fh.write(INPUT_XML.format(raw=raw, out=f"pf_IEEE{n}", qlim="false"))
+            fh.write(INPUT_XML.format(raw=raw, out=f"pf_IEEE{n}", qlim="1"))
         topo = topology(ppc)
         with open(os.path.join(d, "topology.json"), "w") as fh:
             json.dump(topo, fh, indent=1)

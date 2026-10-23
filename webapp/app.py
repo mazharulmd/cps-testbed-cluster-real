@@ -83,9 +83,15 @@ class RunRequest(BaseModel):
     seed: int = Field(1, ge=1, le=10**6)
     mpi_np: Optional[int] = Field(None, ge=1, le=1024)     # default: the cluster's default MPI ranks
 
+    qlim: bool = True
+
     def argv(self):
         a = []
         for k, v in self.model_dump().items():
+            if k == "qlim":
+                if not v:
+                    a.append("--no-qlim")
+                continue
             if v is None or k == "case":
                 continue
             a += [f"--{k.replace('_', '-')}", str(v)]

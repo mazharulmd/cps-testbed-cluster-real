@@ -4,7 +4,7 @@
     <networkConfiguration> IEEE57.raw </networkConfiguration>
     <maxIteration>50</maxIteration>
     <tolerance>1.0e-6</tolerance>
-    <qlim>false</qlim>
+    <qlim>1</qlim>
     <outputFormat>csv</outputFormat>
     <outputFile>pf_IEEE57</outputFile>
     <LinearSolver>

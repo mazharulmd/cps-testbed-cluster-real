@@ -2,14 +2,15 @@ Run from the repository root with Python 3.12 and numpy, scipy, pyyaml,
 pydantic (v2), and pytest available:
 
 ```sh
-python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q
 # Supplied development environment:
-~/.boss-venv/bin/python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 ~/.boss-venv/bin/python -B -m pytest -q
 ```
 
-No HELICS, GridPACK, MPI, NS-3, or pandapower is required. Seeded statistical
-checks use 300 trials per grid. Strict xfails record F1 (BDD calibration,
-WP2), F2 (generator reactive limits, WP3), and S11: estimator weights depend on
+No HELICS, GridPACK, MPI, or NS-3 is required. Optional pandapower cross-checks
+skip if it is absent. See `documentation/qlim.md` for reactive-limit validation.
+Seeded statistical checks use 300 trials per grid. Strict xfails record F1 (BDD calibration,
+WP2) and S11: estimator weights depend on
 measured |z| (sig = sigma*|z|), so J is not exactly invariant under a = H c;
 decision pending in WP2. S11 is not a confirmed bug. An unexpected pass fails
 the suite so the corresponding marker must be reviewed when behaviour changes.

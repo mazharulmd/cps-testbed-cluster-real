@@ -33,7 +33,6 @@ def generator_q(net, voltage):
     return {bus["id"]: injection[i].imag + bus["qd"] for i, bus in enumerate(net.buses)}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F2 generator reactive limits fixed in WP3")
 def test_base_case_generator_reactive_limits(network_for, solution_for):
     violations = []
     for case in (14, 30, 39, 57, 118, 300):
@@ -51,7 +50,6 @@ def test_base_case_generator_reactive_limits(network_for, solution_for):
     assert not violations, "\n".join(violations)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F2 generator reactive limits fixed in WP3")
 def test_ieee118_generator49_high_setpoint_respects_reactive_limit(network_for):
     net = network_for(118)
     voltage, _, converged = net.solve_pf(vset={49: 1.12})

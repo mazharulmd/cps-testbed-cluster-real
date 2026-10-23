@@ -39,6 +39,7 @@ def main(cfg_path):
     rng = np.random.default_rng(cfg["seed"])
     dt, T = cfg["grid_step"], cfg["duration"]
 
+    qlim = cfg.get("qlim", True)
     solver, dynamic = None, cfg.get("mode") == "dynamic"
     mpi = cfg.get("mpi") or {}
     ev = cfg.get("event") or {}
@@ -47,7 +48,7 @@ def main(cfg_path):
             sys.exit("[GRID] dynamic mode needs GridPACK's dsf_server (CPS_DSF_SERVER)")
         solver = GridPackDynamicSolver(net, topo, os.path.join(out, "gridpack"), cfg.get("grid_dir"),
                                        T, dt, ev, mpi.get("np", 1), mpi.get("hostfile"),
-                                       cfg.get("dyn_step", 0.005))
+                                       cfg.get("dyn_step", 0.005), qlim=qlim)
         print(f"[GRID] GridPACK dsf_server: {solver.ready.get('nranks')} MPI ranks, {solver.ready.get('ngen')} "
               f"machines ({solver.machine_info['source']}), integration step {1000 * solver.dt:.3f} ms, "
               f"setup {solver.setup_s:.2f} s", flush=True)
@@ -55,7 +56,8 @@ def main(cfg_path):
     elif cfg["solver"] == "gridpack":
         if server_available():
             # one MPI job for the whole run, started before joining HELICS (partitioning takes a while)
-            solver = GridPackMPISolver(net, topo, os.path.join(out, "gridpack"), mpi.get("np", 1), mpi.get("hostfile"))
+            solver = GridPackMPISolver(net, topo, os.path.join(out, "gridpack"),
+                                       mpi.get("np", 1), mpi.get("hostfile"), qlim=qlim)
             print(f"[GRID] GridPACK pf_server: {solver.ready.get('nranks')} MPI ranks, "
                   f"setup {solver.setup_s:.2f} s", flush=True)
         else:
@@ -90,7 +92,7 @@ def main(cfg_path):
     steps = open(os.path.join(out, "grid_steps.csv"), "w", newline="")
     sw = csv.writer(steps)
     sw.writerow(["t", "solver", "converged", "iterations", "total_load_mw", "max_v", "max_v_bus", "min_v", "min_v_bus",
-                 "solve_ms", "mpi_ranks", "gridpack_solve_ms"])
+                 "solve_ms", "mpi_ranks", "gridpack_solve_ms", "q_limited"])
     if dynamic:
         dyn = open(os.path.join(out, "grid_dynamics.csv"), "w", newline="")
         dw = csv.writer(dyn)
@@ -160,7 +162,9 @@ def main(cfg_path):
         srv = getattr(solver, "last", None) or {}
         if not dynamic and (V is None or not ok):
             used = "builtin"
-            V, it, ok = net.solve_pf(pd, qd, vset)
+            V, it, ok = net.solve_pf(pd, qd, vset, qlim=qlim)
+        # Dynamic exciters do not use the QSS PV/PQ switching mechanism.
+        limited = ({} if dynamic else net.last_qlim if used == "builtin" else solver.last_qlim)
         vm = np.abs(V)
         tw.writerow([t] + [f"{x:.6f}" for x in vm])
         status = {"t": t, "vm": [round(float(x), 5) for x in vm], "solver": used, "applied": applied_now}
@@ -207,7 +211,8 @@ def main(cfg_path):
         sw.writerow([t, used, ok, it, f"{pd.sum():.2f}", f"{vm.max():.5f}", net.bus_ids[int(vm.argmax())],
                      f"{vm.min():.5f}", net.bus_ids[int(vm.argmin())], f"{1000 * t_solve:.2f}",
                      getattr(solver, "np", 1) if used.startswith("gridpack") else "",
-                     f"{1000 * float(srv['t_solve']):.2f}" if used.startswith("gridpack") and "t_solve" in srv else ""])
+                     f"{1000 * float(srv['t_solve']):.2f}" if used.startswith("gridpack") and "t_solve" in srv else "",
+                     " ".join(f"{bus}:{side}" for bus, side in sorted(limited.items()))])
         meas = {str(pm["bus"]): ph for pm, ph in zip(layout.pmus, layout.measure(V))}
         h.helicsPublicationPublishString(pub, json.dumps({"t": t, "pmus": meas}))
         h.helicsPublicationPublishString(pub_status, json.dumps(status))

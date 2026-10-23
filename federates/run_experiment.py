@@ -40,6 +40,8 @@ def parse_args(argv=None):
     a.add_argument("--dyn-step", type=float, default=0.005, help="largest integration step of the dynamic simulation (s)")
     a.add_argument("--rate", type=float, default=30.0, help="PMU reporting rate (frames/s)")
     a.add_argument("--solver", default="gridpack", choices=["gridpack", "builtin"])
+    a.add_argument("--no-qlim", dest="qlim", action="store_false",
+                   help="disable generator reactive limits (default: enforced)")
     a.add_argument("--placement", type=int, default=1, choices=[1, 2],
                    help="1 = minimum PMUs for observability, 2 = every bus seen by two PMUs")
     a.add_argument("--latency", type=float, default=10.0, help="mean PMU->PDC link latency (ms)")
@@ -111,18 +113,18 @@ def build_configs(args, run_dir, cl, port):
     rng = np.random.default_rng(args.seed)
     pmu_buses, _ = optimal_placement(net, args.placement)
     layout = PmuLayout(net, pmu_buses)
-    V0, _, _ = net.solve_pf()
+    V0, _, _ = net.solve_pf(qlim=args.qlim)
 
     event = parse_event(args.event)
 
     # the attacker plans against the operating point it will face (including the event)
     V_plan = V0
     if event["type"] == "avr_fault":
-        V_plan, _, _ = net.solve_pf(vset={event["bus"]: event["vset"]})
+        V_plan, _, _ = net.solve_pf(vset={event["bus"]: event["vset"]}, qlim=args.qlim)
     elif event["type"] == "load_step":
         pd = np.array([b["pd"] for b in topo["buses"]]); qd = np.array([b["qd"] for b in topo["buses"]])
         i = net.idx[event["bus"]]; pd[i] *= 1 + event["pct"] / 100; qd[i] *= 1 + event["pct"] / 100
-        V_plan, _, _ = net.solve_pf(pd, qd)
+        V_plan, _, _ = net.solve_pf(pd, qd, qlim=args.qlim)
     target = args.target or net.bus_ids[int(np.argmax(np.abs(V_plan)))]
     attack = {"type": "none"}
     plan = None
@@ -158,7 +160,8 @@ def build_configs(args, run_dir, cl, port):
                        "deadband": 0.003, "cooldown": 1.0, "vset_min": 0.95, "vset_max": 1.10},
            "mpi": {"np": args.mpi_np, "hostfile": cl["mpi"].get("hostfile") if cl["nodes"] else None},
            "helics_port": port, "helics_core_init": cluster.core_init(cl, cl["placement"].get("grid", cl["head"]), port),
-           "cc_core_init": cluster.core_init(cl, cl["placement"].get("cc", cl["head"]), port)}
+           "cc_core_init": cluster.core_init(cl, cl["placement"].get("cc", cl["head"]), port),
+           "qlim": args.qlim}
     if args.mode == "dynamic" and event["type"] == "load_step":
         raise SystemExit("load steps are available in the quasi-steady-state mode only")
     if args.mode == "qss" and event["type"] in ("bus_fault", "line_trip", "gen_trip"):
