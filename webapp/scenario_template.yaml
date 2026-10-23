@@ -16,6 +16,8 @@ seed: 1                      # random seed for link delays, noise and losses
 pmu:
   placement: minimum         # minimum = fewest PMUs for full observability; redundant = every bus seen twice
   rate: 30                   # frames per second per PMU
+  noise_mag: 0.001           # relative magnitude noise std-dev (0..0.05)
+  noise_ang: 0.001           # angle noise std-dev in radians (0..0.05)
 
 network:                     # every PMU has its own link to the PDC
   latency_ms: 10             # mean one-way delay
@@ -48,6 +50,8 @@ control:
   voltage_control: true      # send generator setpoint commands on voltage violations
   vmin: 0.94
   vmax: 1.08
+  se_sigma: null             # null = sqrt((noise_mag^2 + noise_ang^2)/2), 0.001 by default;
+                            # positive value overrides relative rectangular per-component std-dev
 
 # Several experiments in one file: the fields above are shared, each entry overrides them.
 # scenarios:

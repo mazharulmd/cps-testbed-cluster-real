@@ -5,16 +5,18 @@ from cpslib.estimation import StateEstimator
 
 
 @pytest.mark.parametrize("case", [14, 118])
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F1 BDD calibration fixed in WP2")
-def test_ns3_noise_bdd_calibration(case, solution_for, layout_for, ns3_noise):
+def test_ns3_noise_bdd_calibration(case, solution_for, layout_for, ns3_noise, experiment_configs):
+    ns3, config, _, _ = experiment_configs(case)
     layout = layout_for(case, 1)
     z_true = layout.H @ solution_for(case)
     alpha = 0.01
-    estimator = StateEstimator(layout, sigma=0.002, alpha=alpha)
+    # Use the effective sigma derived by the default experiment config, so a
+    # regression in run_experiment's calibration fails the statistical checks.
+    estimator = StateEstimator(layout, sigma=config["se_sigma"], alpha=alpha)
     rng = np.random.default_rng(0)
     ratios, alarms = [], []
-    for _ in range(300):
-        z = ns3_noise(z_true, rng)
+    for _ in range(1000):
+        z = ns3_noise(z_true, rng, **ns3["noise"])
         result = estimator.estimate({key: z[row] for key, row in layout.row.items()})
         assert result["observable"]
         assert result["dof"] == 2 * (layout.H.shape[0] - layout.net.n)
@@ -24,8 +26,9 @@ def test_ns3_noise_bdd_calibration(case, solution_for, layout_for, ns3_noise):
     false_alarm_rate = float(np.mean(alarms))
     diagnostic = f"IEEE {case}: mean J/dof={mean_ratio:.6f}, false alarms={false_alarm_rate:.4f}"
     # Both statistics are computed over all trials before either assertion.
-    assert false_alarm_rate <= 2 * alpha, diagnostic
-    assert 0.8 <= mean_ratio <= 1.25, diagnostic
+    print(diagnostic)
+    assert 0.5 * alpha <= false_alarm_rate <= 2 * alpha, diagnostic
+    assert 0.9 <= mean_ratio <= 1.1, diagnostic
 
 
 def generator_q(net, voltage):

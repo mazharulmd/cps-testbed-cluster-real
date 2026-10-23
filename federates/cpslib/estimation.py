@@ -7,10 +7,25 @@ J = sum |r_k|^2 / sigma_k^2 follows a chi-square distribution with
 bad (possibly falsified) data. The largest normalized residual points to the
 suspicious channel.
 """
+import math
+
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import splu
 from scipy.stats import chi2
+
+
+def sigma_from_polar_noise(mag, ang):
+    """Relative rectangular per-component std-dev for independent polar noise.
+
+    To first order, averaging the real/imaginary variances gives
+    |z|**2 * (mag**2 + ang**2) / 2. Equal magnitude and angle noise is isotropic;
+    for unequal values this is a scalar approximation to the covariance.
+    The estimator retains its measured-|z| weighting and absolute noise floor.
+    """
+    if not all(math.isfinite(value) and value >= 0 for value in (mag, ang)):
+        raise ValueError("polar noise standard deviations must be finite and nonnegative")
+    return math.hypot(mag, ang) / math.sqrt(2)
 
 
 class StateEstimator:

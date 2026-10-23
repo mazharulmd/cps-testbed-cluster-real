@@ -82,6 +82,9 @@ class RunRequest(BaseModel):
                                       r"fault:\d+:[0-9.]+:[0-9.]+|line:\d+:\d+:[0-9.]+|gen:\d+:[0-9.]+)$")
     seed: int = Field(1, ge=1, le=10**6)
     mpi_np: Optional[int] = Field(None, ge=1, le=1024)     # default: the cluster's default MPI ranks
+    noise_mag: float = Field(0.001, ge=0, le=0.05)
+    noise_ang: float = Field(0.001, ge=0, le=0.05)
+    se_sigma: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
     def argv(self):
         a = []

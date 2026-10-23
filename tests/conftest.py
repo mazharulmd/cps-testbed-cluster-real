@@ -13,6 +13,7 @@ for directory in ("federates", "webapp"):
 from cpslib.network import Network
 from cpslib.placement import optimal_placement
 from cpslib.pmu import PmuLayout
+from run_experiment import build_configs, parse_args
 
 
 @pytest.fixture(scope="session")
@@ -54,10 +55,28 @@ def layout_for(network_for):
 
 @pytest.fixture
 def ns3_noise():
-    def sample(z, rng):
+    def sample(z, rng, mag=0.001, ang=0.001):
         # NS-3 Sample(): independent normal draws for magnitude and phase.
-        return np.abs(z) * (1 + 0.001 * rng.standard_normal(z.size)) * np.exp(
-            1j * (np.angle(z) + 0.001 * rng.standard_normal(z.size))
+        return np.abs(z) * (1 + mag * rng.standard_normal(z.size)) * np.exp(
+            1j * (np.angle(z) + ang * rng.standard_normal(z.size))
         )
 
     return sample
+
+
+@pytest.fixture(scope="session")
+def experiment_configs(tmp_path_factory):
+    """Exercise the actual CLI -> NS-3/CC config path without starting federates."""
+    import json
+
+    @lru_cache(maxsize=None)
+    def build(case=14, options=()):
+        args = parse_args(["--case", str(case), *options])
+        run_dir = tmp_path_factory.mktemp(f"config-{case}")
+        cl = {"head": "localhost", "placement": {}, "nodes": [], "mpi": {}}
+        meta = build_configs(args, str(run_dir), cl, 23500)
+        ns3 = json.loads((run_dir / "ns3_config.json").read_text())
+        run = json.loads((run_dir / "run_config.json").read_text())
+        return ns3, run, meta, run_dir
+
+    return build
