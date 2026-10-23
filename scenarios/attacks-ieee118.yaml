@@ -1,0 +1,60 @@
+# Attack demonstrations; comments describe intent, not measured outcomes.
+grid: ieee118
+solver: builtin
+duration: 10
+network: {latency_ms: 10, loss: 0, pdc_wait_ms: 20}
+scenarios:
+  # Establish the corresponding unattacked operating point.
+  - name: a118-none
+    attack: {type: none}
+  # Exercise single-channel FDI with the minimum PMU placement.
+  - name: a118-simple-min
+    pmu: {placement: minimum}
+    attack: {type: fdi-simple, target: 49, start: 3, end: 8}
+  # Compare single-channel FDI with redundant observations.
+  - name: a118-simple-red
+    pmu: {placement: redundant}
+    attack: {type: fdi-simple, target: 49, start: 3, end: 8}
+  # Exercise a gradual single-channel injection instead of a step.
+  - name: a118-simple-ramp
+    pmu: {placement: redundant}
+    attack: {type: fdi-simple, target: 49, start: 3, end: 8, ramp_s: 2}
+  # Exercise consistent multi-channel FDI with a gradual onset.
+  - name: a118-stealthy-ramp
+    pmu: {placement: redundant}
+    attack: {type: fdi-stealthy, target: 49, start: 3, end: 8, ramp_s: 2}
+  # Delay frames from PMUs observing the target bus.
+  - name: a118-delay
+    attack: {type: delay, target: 49, start: 3, end: 8, delay_ms: 100}
+  # Remove frames from PMUs observing the target bus.
+  - name: a118-drop
+    attack: {type: drop, target: 49, start: 3, end: 8}
+  # Loop pre-event noisy frames from target observers with minimum PMUs.
+  - name: a118-replay-min
+    pmu: {placement: minimum}
+    event: {type: avr_fault, bus: 49, vset: 1.12, t: 3}
+    attack: {type: replay, target: 49, start: 3, end: 8, record_s: 2}
+  # Compare targeted replay with redundant observations after the event.
+  - name: a118-replay-red
+    pmu: {placement: redundant}
+    event: {type: avr_fault, bus: 49, vset: 1.12, t: 3}
+    attack: {type: replay, target: 49, start: 3, end: 8, record_s: 2}
+  # Exercise null-target replay across all PMUs after the event.
+  - name: a118-replay-all
+    event: {type: avr_fault, bus: 49, vset: 1.12, t: 3}
+    attack: {type: replay, target: null, start: 3, end: 8}
+  # Drop corrective generator commands prompted by an AVR fault.
+  - name: a118-cmd-drop
+    event: {type: avr_fault, bus: 49, vset: 1.12, t: 3}
+    attack: {type: cmd-drop, target: 49, start: 3, end: 8}
+  # Delay corrective generator commands prompted by an AVR fault.
+  - name: a118-cmd-delay
+    event: {type: avr_fault, bus: 49, vset: 1.12, t: 3}
+    attack: {type: cmd-delay, target: 49, start: 3, end: 8, delay_ms: 500}
+  # Inject one forged generator setpoint through the normal UDP link.
+  - name: a118-cmd-inject
+    attack: {type: cmd-inject, target: 49, start: 3, end: 8, vset: 1.12}
+  # Combine a forged setpoint with stealthy FDI showing its pre-attack voltage.
+  - name: a118-coordinated
+    pmu: {placement: redundant}
+    attack: {type: coordinated, target: 49, start: 3, end: 8, vset: 1.12}

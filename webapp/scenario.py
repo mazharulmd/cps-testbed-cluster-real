@@ -49,17 +49,27 @@ class Event(Strict):
 
 
 class Attack(Strict):
-    type: Literal["none", "fdi-simple", "fdi-stealthy", "delay", "drop"] = "none"
+    type: Literal["none", "fdi-simple", "fdi-stealthy", "delay", "drop", "replay",
+                  "cmd-drop", "cmd-delay", "cmd-inject", "coordinated"] = "none"
     target: Optional[int] = None
     fake: Optional[float] = Field(None, ge=0.5, le=1.5)
     start: float = Field(4, ge=0)
     end: float = Field(9, ge=0)
     delay_ms: float = Field(100, ge=0, le=5000)
+    record_s: Optional[float] = Field(None, gt=0)
+    ramp_s: float = Field(0, ge=0)
+    vset: float = Field(1.12, ge=0.8, le=1.2)
 
     @model_validator(mode="after")
     def _window(self):
         if self.type != "none" and self.end <= self.start:
             raise ValueError("attack end must be after attack start")
+        if self.record_s is not None and self.record_s > self.start:
+            raise ValueError("record_s must be <= attack start")
+        if self.type == "replay" and self.start == 0:
+            raise ValueError("replay record_s requires attack start > 0")
+        if self.type == "replay" and self.record_s is None:
+            self.record_s = min(self.start, self.end - self.start)
         return self
 
 
@@ -117,6 +127,7 @@ class Scenario(Strict):
             "jitter": self.network.jitter_ms, "loss": self.network.loss, "pdc_wait": self.network.pdc_wait_ms,
             "attack": self.attack.type, "target": self.attack.target, "fake": self.attack.fake,
             "attack_start": self.attack.start, "attack_end": self.attack.end, "attack_delay": self.attack.delay_ms,
+            "record_s": self.attack.record_s, "ramp_s": self.attack.ramp_s, "attack_vset": self.attack.vset,
             "bdd": "on" if self.control.bdd else "off", "control": "on" if self.control.voltage_control else "off",
             "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed,
         }

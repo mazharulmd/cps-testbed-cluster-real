@@ -18,7 +18,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import scenario as scen
 
@@ -68,12 +68,15 @@ class RunRequest(BaseModel):
     jitter: float = Field(2, ge=0, le=500)
     loss: float = Field(0, ge=0, le=0.9)
     pdc_wait: float = Field(20, ge=1, le=2000)
-    attack: str = Field("none", pattern=r"^(none|fdi-simple|fdi-stealthy|drop|delay)$")
+    attack: str = Field("none", pattern=r"^(none|fdi-simple|fdi-stealthy|drop|delay|replay|cmd-drop|cmd-delay|cmd-inject|coordinated)$")
     target: Optional[int] = Field(None, ge=1, le=99999)
     fake: Optional[float] = Field(None, ge=0.5, le=1.5)
     attack_start: float = Field(3, ge=0, le=60)
     attack_end: float = Field(8, ge=0, le=60)
     attack_delay: float = Field(100, ge=0, le=5000)
+    record_s: Optional[float] = Field(None, gt=0)
+    ramp_s: float = Field(0, ge=0)
+    attack_vset: float = Field(1.12, ge=0.8, le=1.2)
     bdd: str = Field("on", pattern=r"^(on|off)$")
     control: str = Field("on", pattern=r"^(on|off)$")
     vmin: float = Field(0.94, ge=0.5, le=1.0)
@@ -82,6 +85,14 @@ class RunRequest(BaseModel):
                                       r"fault:\d+:[0-9.]+:[0-9.]+|line:\d+:\d+:[0-9.]+|gen:\d+:[0-9.]+)$")
     seed: int = Field(1, ge=1, le=10**6)
     mpi_np: Optional[int] = Field(None, ge=1, le=1024)     # default: the cluster's default MPI ranks
+
+    @model_validator(mode="after")
+    def _attack(self):
+        attack = scen.Attack(type=self.attack, target=self.target, fake=self.fake,
+                            start=self.attack_start, end=self.attack_end, delay_ms=self.attack_delay,
+                            record_s=self.record_s, ramp_s=self.ramp_s, vset=self.attack_vset)
+        self.record_s = attack.record_s
+        return self
 
     def argv(self):
         a = []
@@ -232,6 +243,8 @@ def queue_run(req: RunRequest, source=None):
     if req.target is not None and req.target not in buses:
         raise HTTPException(422, f"target bus {req.target} is not in {label} "
                                  f"(buses {min(buses)}-{max(buses)})")
+    if (req.attack.startswith("cmd-") or req.attack == "coordinated") and req.target is not None and req.target not in gens:
+        raise HTTPException(422, f"attack '{req.attack}' needs a generator bus; target {req.target} is not a generator bus in {label}")
     if req.event != "none":
         kind, bus = req.event.split(":")[:2]
         bus = int(bus)
