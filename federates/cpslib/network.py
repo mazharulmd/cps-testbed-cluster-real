@@ -17,6 +17,7 @@ class Network:
         self.bus_ids = [b["id"] for b in self.buses]
         self.idx = {b: i for i, b in enumerate(self.bus_ids)}
         self.n = len(self.bus_ids)
+        self.last_qlim = {}
         self._build_admittances()
 
     def _build_admittances(self):
@@ -54,15 +55,51 @@ class Network:
         A.data[:] = 1
         return A
 
-    def solve_pf(self, pd=None, qd=None, vset=None, tol=1e-9, max_it=30, V_init=None):
+    def q_limits_at(self, V, qd=None, atol=1e-3):
+        """Infer PV bus limit contacts from voltages and actual loads (MVAr).
+
+        Used for GridPACK diagnostics, whose voltage protocol has no switch flags.
+        Reference buses and offline generators are excluded. Unlike last_qlim,
+        this reports numerical contact, not the solver's PV-to-PQ decisions.
+        """
+        qd = np.array([b["qd"] for b in self.buses]) if qd is None else np.asarray(qd)
+        qg = (V * np.conj(self.Ybus @ V)).imag * self.base + qd
+        limits = {}
+        for g in self.gens:
+            if g["status"] and self.buses[self.idx[g["bus"]]]["type"] == 2:
+                low, high = limits.get(g["bus"], (0., 0.))
+                limits[g["bus"]] = low + g["qmin"], high + g["qmax"]
+        contacts = {}
+        for bus, (low, high) in limits.items():
+            q = qg[self.idx[bus]]
+            if abs(q - high) <= atol:
+                contacts[bus] = "max"
+            elif abs(q - low) <= atol:
+                contacts[bus] = "min"
+        return contacts
+
+    def solve_pf(self, pd=None, qd=None, vset=None, tol=1e-9, max_it=30, V_init=None, *,
+                 qlim=True, max_qlim_it=30):
         """Newton-Raphson power flow (reference solver; loads in MW/MVAr, vset {bus_id: pu}).
         Starts from V_init, else from the voltages stored with the case (vm/va, as MATPOWER
-        does), else flat."""
+        does), else flat.
+
+        With qlim=True (default), aggregate in-service generator Q limits at each
+        PV bus are enforced, excluding reference buses. All violating PV buses
+        switch to PQ each round (MATPOWER ENFORCE_Q_LIMS=1), avoiding extra solves
+        for independent violations. Switched buses stay PQ for this call only.
+        last_qlim maps their bus IDs to "min"/"max"; it resets on every call.
+        it counts Newton updates across all rounds. Failure to converge or finish
+        within max_qlim_it power-flow rounds returns ok=False. qlim=False retains
+        the unconstrained solution used by the historical reference.csv files.
+        """
+        self.last_qlim = {}
         n, base = self.n, self.base
         pd = np.array([b["pd"] for b in self.buses]) if pd is None else np.asarray(pd, float)
         qd = np.array([b["qd"] for b in self.buses]) if qd is None else np.asarray(qd, float)
         types = np.array([b["type"] for b in self.buses])
         pg = np.zeros(n)
+        qmin, qmax = np.zeros(n), np.zeros(n)
         if V_init is not None:
             V0, A0 = np.abs(V_init).astype(float), np.angle(V_init)
         else:
@@ -72,6 +109,7 @@ class Network:
             if g["status"]:
                 i = self.idx[g["bus"]]
                 pg[i] += g["pg"]; V0[i] = g["vg"]
+                qmin[i] += g["qmin"]; qmax[i] += g["qmax"]
         if vset:
             for b, v in vset.items():
                 V0[self.idx[b]] = v
@@ -81,14 +119,35 @@ class Network:
             if g["status"]:
                 has_gen[self.idx[g["bus"]]] = True
         types = np.where((types == 2) & ~has_gen, 1, types)
-        ref = np.where(types == 3)[0]; pv = np.where(types == 2)[0]; pq = np.where(types == 1)[0]
+        pv = np.where(types == 2)[0]; pq = np.where(types == 1)[0]
         Sbus = (pg - pd - 1j * qd) / base
         V = V0 * np.exp(1j * A0)
+        total_it = 0
+        for _ in range(max_qlim_it if qlim else 1):
+            V, it, ok = self._newton_pf(Sbus, V, pv, pq, tol, max_it)
+            total_it += it
+            if not ok or not qlim:
+                return V, total_it, ok
+            qg = (V * np.conj(self.Ybus @ V)).imag * base + qd
+            # MVAr tolerance consistent with the Newton mismatch tolerance.
+            eps = max(tol * base, 1e-7)
+            low, high = pv[qg[pv] < qmin[pv] - eps], pv[qg[pv] > qmax[pv] + eps]
+            if not len(low) and not len(high):
+                return V, total_it, True
+            for buses, limits, side in ((low, qmin, "min"), (high, qmax, "max")):
+                for i in buses:
+                    self.last_qlim[self.bus_ids[i]] = side
+                    Sbus[i] = complex(Sbus[i].real, (limits[i] - qd[i]) / base)
+                    types[i] = 1
+            pv, pq = np.where(types == 2)[0], np.where(types == 1)[0]
+        return V, total_it, False
+
+    def _newton_pf(self, Sbus, V, pv, pq, tol, max_it):
         pvpq = np.r_[pv, pq]
         for it in range(max_it):
             mis = V * np.conj(self.Ybus @ V) - Sbus
             F = np.r_[mis[pvpq].real, mis[pq].imag]
-            if np.max(np.abs(F)) < tol:
+            if not F.size or np.max(np.abs(F)) < tol:
                 return V, it, True
             Ibus = self.Ybus @ V
             # MATPOWER's dSbus_dV with sparse matrices

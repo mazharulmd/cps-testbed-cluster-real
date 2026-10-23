@@ -86,9 +86,15 @@ class RunRequest(BaseModel):
     noise_ang: float = Field(0.001, ge=0, le=0.05)
     se_sigma: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
+    qlim: bool = True
+
     def argv(self):
         a = []
         for k, v in self.model_dump().items():
+            if k == "qlim":
+                if not v:
+                    a.append("--no-qlim")
+                continue
             if v is None or k == "case":
                 continue
             a += [f"--{k.replace('_', '-')}", str(v)]

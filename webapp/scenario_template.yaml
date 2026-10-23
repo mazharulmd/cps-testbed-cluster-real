@@ -9,6 +9,7 @@ mode: qss                    # qss = GridPACK power flow every grid_step (quasi-
                              # dynamic = GridPACK dynamic simulation: generators, exciters and governors
                              # integrated every few ms, faults and trips, frequency (needs solver: gridpack)
 grid_step: 0.5               # qss: power flow interval (s); dynamic: default one PMU frame (1/rate)
+qlim: true                   # enforce reactive limits in QSS / initial dynamic power flow
 solver: gridpack             # gridpack (MPI on the cluster) or builtin (Python Newton-Raphson, qss only)
 mpi_np: 4                    # example; number of MPI ranks GridPACK runs on (default: the cluster setting)
 seed: 1                      # random seed for link delays, noise and losses

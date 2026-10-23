@@ -87,6 +87,7 @@ class Scenario(Strict):
     event: Event = Event()
     attack: Attack = Attack()
     control: Control = Control()
+    qlim: bool = True
 
     @model_validator(mode="after")
     def _mode(self):
@@ -123,7 +124,7 @@ class Scenario(Strict):
             "bdd": "on" if self.control.bdd else "off", "control": "on" if self.control.voltage_control else "off",
             "vmin": self.control.vmin, "vmax": self.control.vmax, "event": ev, "seed": self.seed,
             "noise_mag": self.pmu.noise_mag, "noise_ang": self.pmu.noise_ang,
-            "se_sigma": self.control.se_sigma,
+            "se_sigma": self.control.se_sigma, "qlim": self.qlim,
         }
 
 

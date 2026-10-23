@@ -7,7 +7,8 @@ import pytest
 @pytest.mark.parametrize("case", [14, 30, 39, 57, 118, 300])
 def test_power_flow_matches_reference(case, repo_root, network_for, solution_for):
     net = network_for(case)
-    voltage = solution_for(case)
+    voltage, _, converged = net.solve_pf(qlim=False)
+    assert converged
     with (repo_root / "cases" / f"ieee{case}" / "reference.csv").open() as stream:
         reference = {int(row["bus_id"]): row for row in csv.DictReader(stream)}
     assert set(reference) == set(net.bus_ids)

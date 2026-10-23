@@ -10,13 +10,14 @@ from .dynamics import machine_data
 
 # ---------------------------------------------------------------- persistent MPI server
 PF_SERVER = os.environ.get("CPS_PF_SERVER", "/opt/cps/gridpack/bin/pf_server")
+# This GridPACK build reads qlim as int (PFAppModule::p_qlim), so use 1/0.
 SERVER_XML = """<?xml version="1.0" encoding="utf-8"?>
 <Configuration>
   <Powerflow>
     <networkConfiguration> {raw} </networkConfiguration>
     <maxIteration>50</maxIteration>
     <tolerance>1.0e-6</tolerance>
-    <qlim>false</qlim>
+    <qlim>{qlim}</qlim>
     <LinearSolver>
       <PETScOptions>
         -ksp_type preonly
@@ -107,14 +108,15 @@ class GridPackMPISolver(_MPIServer):
     sit on other cluster nodes (`hostfile`). The network is read and partitioned once; each
     solve() only sends the changed loads and generator setpoints to rank 0's stdin."""
 
-    def __init__(self, net, topo, workdir, np_=1, hostfile=None, log=None):
+    def __init__(self, net, topo, workdir, np_=1, hostfile=None, log=None, qlim=True):
+        self.qlim, self.last_qlim = qlim, {}
         self.net, self.topo, self.dir = net, topo, os.path.abspath(workdir)
         os.makedirs(self.dir, exist_ok=True)
         raw = os.path.join(self.dir, "case.raw")
         write_raw(raw, topo)
         xml = os.path.join(self.dir, "input.xml")
         with open(xml, "w") as fh:
-            fh.write(SERVER_XML.format(raw=raw))
+            fh.write(SERVER_XML.format(raw=raw, qlim=int(qlim)))
         # GridPACK only creates load records for buses with a non-zero load in the .raw file
         self.load_buses = [i for i, b in enumerate(topo["buses"]) if b["pd"] != 0 or b["qd"] != 0]
         # generator ids are numbered per bus in file order, as rawio writes them
@@ -138,6 +140,7 @@ class GridPackMPISolver(_MPIServer):
         for bus, vm, va in rows["@@V"]:
             V[self.net.idx[int(bus)]] = float(vm) * np.exp(1j * np.deg2rad(float(va)))
         ok = head.get("ok") == "1" and len(rows["@@V"]) == self.net.n
+        self.last_qlim = self.net.q_limits_at(V, qd) if self.qlim and ok else {}
         return V, 0, ok
 
 
@@ -149,7 +152,7 @@ DSF_XML = """<?xml version="1.0" encoding="utf-8"?>
     <networkConfiguration> {raw} </networkConfiguration>
     <maxIteration>50</maxIteration>
     <tolerance>1.0e-8</tolerance>
-    <qlim>false</qlim>
+    <qlim>{qlim}</qlim>
     <LinearSolver>
       <PETScOptions>
         -ksp_type preonly
@@ -212,7 +215,7 @@ class GridPackDynamicSolver(_MPIServer):
     setpoints move the exciters' voltage references by the same amount."""
 
     def __init__(self, net, topo, workdir, grid_dir, duration, step, event=None, np_=1,
-                 hostfile=None, max_dt=0.005, log=None):
+                 hostfile=None, max_dt=0.005, log=None, qlim=True):
         self.net, self.topo, self.dir = net, topo, os.path.abspath(workdir)
         os.makedirs(self.dir, exist_ok=True)
         # integration step: the largest that fits a whole number of times into a grid step
@@ -232,7 +235,8 @@ class GridPackDynamicSolver(_MPIServer):
                 for b, g in self.gens]
         xml = os.path.join(self.dir, "input.xml")
         with open(xml, "w") as fh:
-            fh.write(DSF_XML.format(raw=raw, dyr=dyr_path, T=duration + 1.0, dt=f"{self.dt:.10g}",
+            fh.write(DSF_XML.format(raw=raw, qlim=int(qlim), dyr=dyr_path, T=duration + 1.0,
+                                    dt=f"{self.dt:.10g}",
                                     events="\n".join(dsf_events(event or {}, topo, self.dt)),
                                     observations="\n".join(obs)))
         self.vg0 = {}
@@ -242,7 +246,7 @@ class GridPackDynamicSolver(_MPIServer):
         self.pending = []
         # GridPACK reports the bus voltages after the first integration step; at t = 0 the
         # state is the initial power flow, which the testbed's own solver reproduces
-        self.V0, _, _ = net.solve_pf()
+        self.V0, _, _ = net.solve_pf(qlim=qlim)
         self.server = DSF_SERVER
         self._start(DSF_SERVER, xml, np_, hostfile, log or os.path.join(self.dir, "dsf_server.log"))
 
