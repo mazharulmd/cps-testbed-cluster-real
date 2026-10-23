@@ -63,6 +63,8 @@ attack:
 control:
   bdd: true                  # chi-square bad data detection with removal of suspicious PMUs
   voltage_control: true      # send generator setpoint commands on voltage violations
+  telemetry_s: 2.0           # actual generator setpoints/Q via NS-3 UDP (seconds)
+  ack_timeout_s: null        # null = twice the expected maximum application round trip; positive override
   vmin: 0.94
   vmax: 1.08
   se_sigma: null             # null = sqrt((noise_mag^2 + noise_ang^2)/2), 0.001 by default;

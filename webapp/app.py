@@ -88,6 +88,8 @@ class RunRequest(BaseModel):
     noise_mag: float = Field(0.001, ge=0, le=0.05)
     noise_ang: float = Field(0.001, ge=0, le=0.05)
     se_sigma: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    telemetry_s: float = Field(2.0, gt=0, allow_inf_nan=False)
+    ack_timeout_s: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
     qlim: bool = True
 

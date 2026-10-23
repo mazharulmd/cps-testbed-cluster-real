@@ -71,8 +71,7 @@ def test_minimum_placement_loses_observability_without_one_pmu(
 
     assert result["m"] == len(measurements)
     assert result["observable"] is False
-    # Current estimator behaviour suppresses alarms when unobservable; the
-    # control-center fix comes in WP4.
+    # Alarm semantics remain unchanged; WP4 separately holds control when unobservable.
     assert result["alarm"] is False
     assert factorize.call_count == 1
 
